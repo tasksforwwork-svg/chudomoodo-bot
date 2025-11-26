@@ -16,6 +16,9 @@ Telegram-бот "Дневник маленьких радостей".
 - ачивки за количество радостей и стрики по дням;
 - статистика по команде /stats;
 - если часто грустно / тревожно / тяжело, предлагает мини-ритуал: 3 маленькие радости за день.
+- ДОПОЛНЕНО:
+    - сохраняет эмоцию каждого сообщения в таблицу message_emotions;
+    - извлекает ключевые слова радостей и сохраняет их в joy_keywords.
 """
 
 import os
@@ -23,6 +26,7 @@ import time
 import sqlite3
 import threading
 import random
+import re
 from datetime import datetime, timedelta, date
 from typing import List, Tuple, Optional
 
@@ -32,9 +36,8 @@ import requests
 # CONFIG
 # --------------------------
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TOKEN:
-    raise RuntimeError("Не задан TELEGRAM_TOKEN в переменных окружения.")
+# Вставляем токен напрямую, чтобы не зависеть от переменных окружения на хостинге
+TOKEN = "8485558912:AAGMxJcqks9l7RoxK4U3NVcdtTnw6mdg1WQ"
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}"
 
@@ -54,6 +57,17 @@ LANGTOOL_URL = "https://api.languagetool.org/v2/check"
 BAD_WORDS = [
     "хуй", "хуи", "хер", "пизда", "ебать", "ебан", "сука", "бляд", "бля",
 ]
+
+# Стоп-слова (не считаем их ключевыми) — простой набор, можно дополнять
+STOPWORDS_RU = {
+    "и", "в", "во", "на", "но", "а", "я", "ты", "он", "она", "оно", "мы", "вы", "они",
+    "это", "как", "что", "чтобы", "когда", "там", "здесь", "тут", "про", "для", "из",
+    "у", "с", "со", "от", "под", "над", "по", "за", "же", "ли", "не", "ни",
+    "был", "была", "были", "есть", "буду", "будет", "будут",
+    "мой", "моя", "моё", "мои", "твой", "твоя", "твоё", "твои",
+    "его", "её", "их", "тут", "там", "тот", "та", "то", "те",
+    "очень", "просто", "сегодня", "вчера", "завтра", "ещё", "уже",
+}
 
 # Фразы обычной грусти / упадка
 SAD_PATTERNS = [
@@ -330,7 +344,7 @@ def init_db():
         )
         """
     )
-    # тяжёлые/грустные/тревожные события
+    # тяжёлые/грустные/тревожные события (для ритуала)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sad_events (
@@ -340,6 +354,30 @@ def init_db():
         )
         """
     )
+    # эмоции сообщений (новая таблица)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS message_emotions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            emotion TEXT NOT NULL,
+            source_text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    # ключевые слова радостей (новая таблица)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS joy_keywords (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            keyword TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -363,6 +401,39 @@ def add_sad_event(chat_id: int):
     cur.execute(
         "INSERT INTO sad_events (chat_id, created_at) VALUES (?, ?)",
         (chat_id, created_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+def add_message_emotion(chat_id: int, emotion: str, source_text: str):
+    """
+    Сохраняем эмоцию сообщения (joy / sad / tired / anxiety / severe_sad / greeting / other).
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    created_at = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        """
+        INSERT INTO message_emotions (chat_id, emotion, source_text, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (chat_id, emotion, source_text, created_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+def add_joy_keyword(chat_id: int, keyword: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    created_at = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        """
+        INSERT INTO joy_keywords (chat_id, keyword, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (chat_id, keyword, created_at),
     )
     conn.commit()
     conn.close()
@@ -641,6 +712,75 @@ def is_greeting_message(text: str) -> bool:
     return any(lower == p for p in GREETING_PATTERNS)
 
 
+def detect_emotion_label(text: str) -> str:
+    """
+    Возвращает грубую метку эмоции по тексту.
+    Используем те же паттерны, что и для ответов.
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        return "other"
+
+    if is_severe_sad_message(cleaned):
+        return "severe_sad"
+    if is_anxiety_message(cleaned):
+        return "anxiety"
+    if is_tired_message(cleaned):
+        return "tired"
+    if is_sad_message(cleaned):
+        return "sad"
+    if is_greeting_message(cleaned):
+        return "greeting"
+
+    # Если дошли сюда — либо радость, либо нейтрально.
+    return "other"
+
+
+# --------------------------
+# Выделение ключевых слов радости
+# --------------------------
+
+def extract_keywords(text: str, max_keywords: int = 5) -> List[str]:
+    """
+    Очень простой извлекатель ключевых слов:
+    - приводит к нижнему регистру;
+    - режет по не-буквенным символам;
+    - выбрасывает слишком короткие слова и стоп-слова;
+    - оставляет до max_keywords уникальных слов.
+    """
+    lower = text.lower()
+    # разбиваем по всему, что не буква (рус/лат)
+    raw_tokens = re.split(r"[^a-zA-Zа-яА-ЯёЁ]+", lower)
+    keywords = []
+    seen = set()
+
+    for token in raw_tokens:
+        token = token.strip()
+        if len(token) < 4:
+            continue
+        if token in STOPWORDS_RU:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        keywords.append(token)
+        if len(keywords) >= max_keywords:
+            break
+
+    return keywords
+
+
+def save_joy_keywords(chat_id: int, text: str):
+    """
+    Сохраняем ключевые слова радости в таблицу joy_keywords.
+    """
+    kws = extract_keywords(text)
+    if not kws:
+        return
+    for kw in kws:
+        add_joy_keyword(chat_id, kw)
+
+
 # --------------------------
 # Генерация текстов ответов
 # --------------------------
@@ -880,11 +1020,14 @@ def process_incoming_message(update: dict):
             "Каждый день можно писать сюда что-то приятное из дня: встречу, вкусный кофе, спокойный вечер.\n"
             "В 19:00 я напомню, если ты ничего не написала, а в 22:00 пришлю небольшой отчёт за день."
         )
+        # /start логически можно считать нейтральным
+        add_message_emotion(chat_id, "start", stripped)
         return
 
     # /stats
     if stripped.startswith("/stats"):
         send_stats(chat_id)
+        add_message_emotion(chat_id, "stats", stripped)
         return
 
     cleaned = clean_text_pipeline(text)
@@ -894,11 +1037,13 @@ def process_incoming_message(update: dict):
             "Мне не удалось ничего сохранить.\n"
             "Попробуй написать чуть конкретнее, что тебя сегодня порадовало."
         )
+        add_message_emotion(chat_id, "other", text)
         return
 
     # Приветствие — отвечаем, но НЕ записываем как радость
     if is_greeting_message(cleaned):
         send_message(chat_id, get_greeting_response())
+        add_message_emotion(chat_id, "greeting", cleaned)
         return
 
     # очень тяжёлые сообщения
@@ -913,6 +1058,7 @@ def process_incoming_message(update: dict):
             )
         )
         add_sad_event(chat_id)
+        add_message_emotion(chat_id, "severe_sad", cleaned)
         maybe_offer_ritual(chat_id)
         return
 
@@ -920,6 +1066,7 @@ def process_incoming_message(update: dict):
     if is_anxiety_message(cleaned):
         send_message(chat_id, get_anxiety_response())
         add_sad_event(chat_id)
+        add_message_emotion(chat_id, "anxiety", cleaned)
         maybe_offer_ritual(chat_id)
         return
 
@@ -927,6 +1074,7 @@ def process_incoming_message(update: dict):
     if is_tired_message(cleaned):
         send_message(chat_id, get_tired_response())
         add_sad_event(chat_id)
+        add_message_emotion(chat_id, "tired", cleaned)
         maybe_offer_ritual(chat_id)
         return
 
@@ -934,13 +1082,16 @@ def process_incoming_message(update: dict):
     if is_sad_message(cleaned):
         send_message(chat_id, get_sad_response())
         add_sad_event(chat_id)
+        add_message_emotion(chat_id, "sad", cleaned)
         maybe_offer_ritual(chat_id)
         return
 
-    # обычная радость
+    # Обычная радость (или нейтральное, но мы трактуем как радость для дневника)
     add_joy(chat_id, cleaned)
+    save_joy_keywords(chat_id, cleaned)
     send_message(chat_id, get_joy_response())
     check_and_send_achievements(chat_id)
+    add_message_emotion(chat_id, "joy", cleaned)
 
 
 # --------------------------
