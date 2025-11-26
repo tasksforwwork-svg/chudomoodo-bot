@@ -2,6 +2,24 @@
 chudomoodo_bot.py
 
 Telegram-бот "Дневник маленьких радостей".
+
+Функционал:
+- принимает от пользователя короткие тексты-радости;
+- очищает мат и нецензурную лексику;
+- (опционально) исправляет орфографию и пунктуацию через LanguageTool;
+- сохраняет радости в SQLite;
+- ЕЖЕДНЕВНЫЙ РЕЖИМ:
+    - в 19:00 — напоминание, если за день не было ни одной радости;
+    - в 22:00 — отчёт с радостями за текущий день;
+- защита от тоски: отдельные реакции на грусть, усталость, тревогу, тяжёлые фразы;
+- спокойные тексты-ответы с одним эмодзи в начале;
+- ачивки за количество радостей и стрики по дням (без упора на цифры в формулировках);
+- статистика по команде /stats;
+- ритуал «3 маленькие радости», если много грусти;
+- микродиалоги: бот может попросить найти одну маленькую опору;
+- персонализация по темам радостей (еда, люди, природа, отдых, успехи);
+- недельные и месячные обзоры по-человечески;
+- письма себе в будущее по команде /letter (через 7 / 14 / 30 дней).
 """
 
 import os
@@ -10,8 +28,9 @@ import sqlite3
 import threading
 import random
 import re
+import json
 from datetime import datetime, timedelta, date
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 import requests
 
@@ -249,6 +268,43 @@ NO_JOY_RESPONSES = [
 SAD_RITUAL_DAYS = 3
 SAD_RITUAL_THRESHOLD = 3
 
+# Темы радостей для персонализации
+THEME_KEYWORDS: Dict[str, List[str]] = {
+    "еда": [
+        "кофе", "чай", "какао", "печень", "печенье", "пицца", "торт", "тортик",
+        "десерт", "шоколад", "конфет", "конфета", "шоколадка", "обед", "ужин",
+        "завтрак", "обедала", "обедал", "ужинала", "ужинал", "завтракала",
+        "завтракал", "кафе", "рестора", "булоч", "круассан", "вкусно", "фрукты",
+        "ягоды", "суши", "роллы", "салат", "еда", "поесть",
+    ],
+    "люди": [
+        "подруга", "подружка", "подруги", "друг", "друзья", "коллег", "мама",
+        "папа", "родител", "семья", "брат", "сестра", "бабушка", "дедушка",
+        "парень", "муж", "любимый", "любимая", "встретил", "встретила",
+        "созвон", "звонок", "переписка", "чат", "компания", "вместе", "обнял",
+        "обняла", "обнялись", "объятия",
+    ],
+    "природа": [
+        "прогулка", "гуляла", "гулял", "парк", "лес", "река", "озеро", "море",
+        "воздух", "свежий воздух", "солнце", "солнечно", "тёплая погода",
+        "теплая погода", "снег", "дождь", "лист", "листья", "трава", "цветы",
+        "цветок", "небо", "рассвет", "закат",
+    ],
+    "отдых": [
+        "отдых", "отдохнула", "отдохнул", "полежала", "полежал", "ничего не делала",
+        "ничего не делал", "выспалась", "выспался", "сон", "спала", "спал",
+        "релакс", "расслабилась", "расслабился", "ванна", "маска для лица",
+        "спа", "тишина", "покой", "паузу", "передышка",
+    ],
+    "успехи": [
+        "сделала", "сделал", "успела", "успел", "закончила", "закончил",
+        "сдала", "сдал", "получилось", "справилась", "справился", "доделала",
+        "доделал", "выполнила", "выполнил", "отчиталась", "отчитался",
+        "похвалили", "похвала", "результат", "достигла", "достиг", "прогресс",
+        "шаг вперёд", "шаг вперед",
+    ],
+}
+
 # --------------------------
 # Telegram API
 # --------------------------
@@ -287,6 +343,7 @@ def send_message(chat_id: int, text: str):
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+    # радости
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS joys (
@@ -297,12 +354,37 @@ def init_db():
         )
         """
     )
+    # тяжёлые/грустные/тревожные события
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sad_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER NOT NULL,
             created_at TEXT NOT NULL
+        )
+        """
+    )
+    # состояние диалога (микро-диалоги, письмо себе и т.п.)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dialog_state (
+            chat_id INTEGER PRIMARY KEY,
+            state TEXT NOT NULL,
+            meta TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    # письма в будущее
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS future_letters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            send_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            sent INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -385,6 +467,30 @@ def get_joys_for_date(chat_id: int, date_obj: date) -> List[Tuple[str, str]]:
         ORDER BY created_at ASC
         """,
         (chat_id, date_str),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_joys_between(chat_id: int, start_date: date, end_date: date) -> List[Tuple[str, str]]:
+    """
+    Радости за период [start_date; end_date].
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    start_str = start_date.isoformat()
+    end_str = end_date.isoformat()
+    cur.execute(
+        """
+        SELECT created_at, text
+        FROM joys
+        WHERE chat_id = ?
+          AND substr(created_at,1,10) >= ?
+          AND substr(created_at,1,10) <= ?
+        ORDER BY created_at ASC
+        """,
+        (chat_id, start_str, end_str),
     )
     rows = cur.fetchall()
     conn.close()
@@ -514,6 +620,113 @@ def get_current_streak(chat_id: int) -> int:
     return streak
 
 
+# --- dialog_state helpers ---
+
+def set_dialog_state(chat_id: int, state: str, meta: Optional[dict] = None):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    now = datetime.now().isoformat(timespec="seconds")
+    meta_json = json.dumps(meta) if meta is not None else None
+    cur.execute(
+        """
+        INSERT INTO dialog_state (chat_id, state, meta, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            state = excluded.state,
+            meta = excluded.meta,
+            updated_at = excluded.updated_at
+        """,
+        (chat_id, state, meta_json, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_dialog_state(chat_id: int) -> Tuple[Optional[str], Optional[dict]]:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT state, meta FROM dialog_state WHERE chat_id = ?",
+        (chat_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None, None
+    state, meta_json = row
+    meta = None
+    if meta_json:
+        try:
+            meta = json.loads(meta_json)
+        except Exception:
+            meta = None
+    return state, meta
+
+
+def clear_dialog_state(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM dialog_state WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+
+# --- future letters helpers ---
+
+def add_future_letter(chat_id: int, text: str, days_ahead: int):
+    now = datetime.now()
+    send_at = now + timedelta(days=days_ahead)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO future_letters (chat_id, text, send_at, created_at, sent)
+        VALUES (?, ?, ?, ?, 0)
+        """,
+        (
+            chat_id,
+            text,
+            send_at.isoformat(timespec="seconds"),
+            now.isoformat(timespec="seconds"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_due_letters() -> List[Tuple[int, int, str, str, str]]:
+    """
+    Возвращает письма, которые пора отправить:
+    (id, chat_id, text, send_at, created_at)
+    """
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, chat_id, text, send_at, created_at
+        FROM future_letters
+        WHERE sent = 0
+          AND send_at <= ?
+        """,
+        (now_iso,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def mark_letter_sent(letter_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE future_letters SET sent = 1 WHERE id = ?",
+        (letter_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
 # --------------------------
 # Очистка текста
 # --------------------------
@@ -575,10 +788,6 @@ def clean_text_pipeline(text: str) -> str:
     return text
 
 
-# --------------------------
-# Распознавание состояний
-# --------------------------
-
 def normalize_text_for_match(text: str) -> str:
     """
     Нормализация текста для сопоставления с паттернами:
@@ -592,6 +801,10 @@ def normalize_text_for_match(text: str) -> str:
     normalized = " ".join(normalized.split())
     return normalized
 
+
+# --------------------------
+# Распознавание состояний
+# --------------------------
 
 def is_severe_sad_message(text: str) -> bool:
     lower = normalize_text_for_match(text)
@@ -621,11 +834,49 @@ def is_greeting_message(text: str) -> bool:
 def is_no_joy_message(text: str) -> bool:
     """
     Нейтральные фразы "не знаю, что написать" — не считаем радостью.
-    Теперь работает и для вариантов без пробелов/смайлов, например:
-    "не знаю,что написать", "не знаю что написать :)"
+    Работает и без пробелов/смайлов.
     """
     lower = normalize_text_for_match(text)
     return any(p in lower for p in NO_JOY_PATTERNS)
+
+
+# --------------------------
+# Темы радостей (персонализация)
+# --------------------------
+
+def classify_joy_themes(text: str) -> List[str]:
+    """
+    Возвращает список тем (еда, люди, природа, отдых, успехи),
+    к которым можно отнести эту радость.
+    """
+    result = []
+    norm = normalize_text_for_match(text)
+    for theme, keywords in THEME_KEYWORDS.items():
+        for kw in keywords:
+            if kw in norm:
+                result.append(theme)
+                break
+    return result
+
+
+def summarize_themes(theme_counts: Dict[str, int]) -> Optional[str]:
+    """
+    Из словаря {тема: количество} делает человеческую фразу.
+    Например: "чаще всего тебя радовали еда, люди и отдых".
+    """
+    filtered = {k: v for k, v in theme_counts.items() if v > 0}
+    if not filtered:
+        return None
+
+    sorted_themes = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
+    names = [t[0] for t in sorted_themes[:3]]
+
+    if len(names) == 1:
+        return f"чаще всего тебя радовала {names[0]}."
+    elif len(names) == 2:
+        return f"чаще всего тебя радовали {names[0]} и {names[1]}."
+    else:
+        return f"чаще всего тебя радовали {names[0]}, {names[1]} и {names[2]}."
 
 
 # --------------------------
@@ -661,7 +912,7 @@ def get_no_joy_response() -> str:
 
 
 # --------------------------
-# Ачивки
+# Ачивки (мягкие формулировки)
 # --------------------------
 
 def check_and_send_achievements(chat_id: int):
@@ -672,45 +923,45 @@ def check_and_send_achievements(chat_id: int):
 
     if total == 1:
         options = [
-            "Первая радость записана. Хорошее начало.",
-            "Ты сделала первый шаг. Дальше будет проще замечать приятное.",
-            "Первая запись есть. Можно потихоньку продолжать.",
+            "Ты сделала первый шаг — отметила свою первую радость. Это уже забота о себе.",
+            "Первая радость записана. Хорошее, тихое начало.",
+            "Первая запись есть. Дальше можно двигаться маленькими шагами.",
         ]
         messages.append(add_emoji_prefix(random.choice(options)))
     elif total == 7:
         options = [
-            "Семь записанных радостей — уже целая неделя.",
-            "Неделя с отмеченными радостями. Это хорошая привычка.",
-            "У тебя уже семь радостей в копилке. Звучит здорово.",
+            "У тебя уже сложилась целая неделя с отмеченными радостями. Красивая привычка.",
+            "Похоже, ты уже привыкла замечать хорошее в течение недели.",
+            "Ты регулярно возвращаешься сюда и отмечаешь светлые моменты — это ценно.",
         ]
         messages.append(add_emoji_prefix(random.choice(options)))
     elif total == 30:
         options = [
-            "Тридцать радостей — солидная коллекция.",
-            "30 записей — это уже заметный след в твоём ежедневии.",
-            "У тебя 30 зафиксированных приятных моментов. Это важно.",
+            "У тебя уже много зафиксированных приятных моментов. Это целая личная история.",
+            "Собралось заметно много радостей — они уже не теряются в памяти.",
+            "Ты оставила довольно длинный след из хороших моментов за собой.",
         ]
         messages.append(add_emoji_prefix(random.choice(options)))
 
     if streak == 3:
         options = [
-            "Три дня подряд ты находишь что-то хорошее. Это очень ценно.",
-            "Три дня подряд с радостями. Классный стрик.",
-            "Ты уже три дня подряд уделяешь внимание хорошему.",
+            "Несколько дней подряд ты находишь что-то хорошее. Это очень бережно к себе.",
+            "Ты несколько дней подряд отмечаешь радости — это уже стабильность.",
+            "Похоже, у тебя появляется привычка замечать приятное даже в обычных днях.",
         ]
         messages.append(add_emoji_prefix(random.choice(options)))
     elif streak == 7:
         options = [
-            "Неделя подряд с маленькими радостями. Красивая серия.",
-            "Семь дней подряд ты что-то отмечаешь для себя. Это много.",
-            "Неделя без пропусков — стабильная забота о себе.",
+            "На протяжении недели ты каждый день находила для себя что-то поддерживающее.",
+            "Ты держишь ритм, находя что-то хорошее каждый день — это вдохновляет.",
+            "Неделя подряд с радостями — очень тёплый результат.",
         ]
         messages.append(add_emoji_prefix(random.choice(options)))
     elif streak == 30:
         options = [
-            "30 дней подряд — очень сильный результат.",
-            "Месяц с ежедневными радостями. Это достойно уважения.",
-            "Ты целый месяц находишь что-то хорошее каждый день.",
+            "Ты продолжаешь замечать хорошее изо дня в день. Это серьёзная внутренняя работа.",
+            "Кажется, радости стали естественной частью твоего дня.",
+            "То, что ты столько времени не бросаешь этот дневник, говорит о большой заботе о себе.",
         ]
         messages.append(add_emoji_prefix(random.choice(options)))
 
@@ -737,23 +988,36 @@ def maybe_offer_ritual(chat_id: int):
 
 
 # --------------------------
-# Еженедельный отчёт (пока не используем)
+# Недельный и месячный обзоры
 # --------------------------
 
-def send_weekly_report_for_user(chat_id: int):
+def send_weekly_human_summary(chat_id: int):
+    """
+    Воскресный обзор за 7 дней:
+    - основные темы радостей
+    - мягкая формулировка
+    """
     today_local = datetime.now().date()
-    week_start = today_local - timedelta(days=6)
-    joys = get_joys_for_week(chat_id, week_start)
+    start = today_local - timedelta(days=6)
+    joys = get_joys_between(chat_id, start, today_local)
 
     if not joys:
         send_message(
             chat_id,
             add_emoji_prefix(
-                "Пока у меня нет сохранённых радостей за эту неделю.\n"
-                "Если захочешь, сегодня можно начать с одной небольшой."
+                "На этой неделе у меня почти нет твоих радостей.\n"
+                "Если дашь себе шанс, в следующую неделю можно попробовать находить хотя бы одну маленькую опору в день."
             )
         )
         return
+
+    theme_counts: Dict[str, int] = {k: 0 for k in THEME_KEYWORDS.keys()}
+    for _, text in joys:
+        themes = classify_joy_themes(text)
+        for t in themes:
+            theme_counts[t] += 1
+
+    themes_phrase = summarize_themes(theme_counts)
 
     lines = []
     for created_at, text in joys:
@@ -767,40 +1031,70 @@ def send_weekly_report_for_user(chat_id: int):
 
     header = "Немного хорошего, которое было с тобой на этой неделе:"
     body = "\n".join(lines)
-    send_message(chat_id, f"{header}\n\n{body}")
+
+    if themes_phrase:
+        extra = f"\n\nЕсли коротко, на этой неделе {themes_phrase}"
+    else:
+        extra = ""
+
+    send_message(chat_id, f"{header}\n\n{body}{extra}")
 
 
-# --------------------------
-# Ежедневный отчёт за день (22:00)
-# --------------------------
-
-def send_daily_report_for_user(chat_id: int):
+def send_monthly_human_summary(chat_id: int):
+    """
+    Обзор за прошлый месяц:
+    - общее ощущение
+    - основные темы
+    """
     today_local = datetime.now().date()
-    joys = get_joys_for_date(chat_id, today_local)
+    first_this_month = today_local.replace(day=1)
+    # предыдущий месяц
+    end_prev = first_this_month - timedelta(days=1)
+    start_prev = end_prev.replace(day=1)
 
+    joys = get_joys_between(chat_id, start_prev, end_prev)
     if not joys:
         send_message(
             chat_id,
             add_emoji_prefix(
-                "Сегодня у меня нет сохранённых радостей.\n"
-                "Если день был тяжёлым — так тоже бывает. Завтра можно попробовать снова."
+                "За прошлый месяц у меня почти нет твоих записей.\n"
+                "Если захочешь, этот месяц может стать началом более тёплой и внимательной истории с собой."
             )
         )
         return
 
-    lines = []
-    for created_at, text in joys:
-        try:
-            dt = datetime.fromisoformat(created_at)
-            time_str = dt.strftime("%H:%M")
-        except Exception:
-            time_str = created_at[11:16]
-        emo = random.choice(JOY_EMOJIS)
-        lines.append(f"{emo} {time_str} — {text}")
+    theme_counts: Dict[str, int] = {k: 0 for k in THEME_KEYWORDS.keys()}
+    for _, text in joys:
+        themes = classify_joy_themes(text)
+        for t in themes:
+            theme_counts[t] += 1
 
-    header = "Вот что хорошего ты отметила сегодня:"
-    body = "\n".join(lines)
-    send_message(chat_id, f"{header}\n\n{body}")
+    themes_phrase = summarize_themes(theme_counts)
+    total = len(joys)
+
+    month_name = start_prev.strftime("%B")
+    month_name_ru = {
+        "January": "январь", "February": "февраль", "March": "март",
+        "April": "апрель", "May": "май", "June": "июнь",
+        "July": "июль", "August": "август", "September": "сентябрь",
+        "October": "октябрь", "November": "ноябрь", "December": "декабрь",
+    }.get(month_name, month_name)
+
+    header = f"Небольшой взгляд назад: твой {month_name_ru}."
+    if themes_phrase:
+        intro = (
+            f"{header}\n\n"
+            f"За этот месяц ты сохранила для себя довольно много тёплых моментов. "
+            f"Если собрать их вместе, видно, что {themes_phrase}"
+        )
+    else:
+        intro = (
+            f"{header}\n\n"
+            "За этот месяц у тебя накопилось немало небольших радостей. "
+            "Они могли быть очень разными, но все они — о тебе и для тебя."
+        )
+
+    send_message(chat_id, add_emoji_prefix(intro))
 
 
 # --------------------------
@@ -827,17 +1121,128 @@ def send_stats(chat_id: int):
 
     msg = (
         f"{em} Небольшая статистика:\n\n"
-        f"• Всего радостей: {total}\n"
-        f"• За последние 7 дней: {last7}\n"
-        f"• Текущий стрик по дням: {streak}\n"
-        f"• Первая запись: {first_str}\n\n"
-        "Ты уже проделала заметную работу для себя."
+        f"• У тебя уже есть заметное количество сохранённых радостей.\n"
+        f"• За последние 7 дней ты всё равно находила что-то хорошее, даже если дни были разными.\n"
+        f"• Сейчас у тебя есть серия дней, где ты не забываешь про себя.\n"
+        f"• Первая запись появилась: {first_str}.\n\n"
+        "Каждая маленькая радость — это шаг в сторону бережного отношения к себе."
     )
     send_message(chat_id, msg)
 
 
 # --------------------------
-# Обработка сообщений
+# Письмо себе в будущее
+# --------------------------
+
+def handle_letter_command(chat_id: int):
+    """
+    /letter — спрашиваем, на какой срок отправить письмо.
+    """
+    clear_dialog_state(chat_id)
+    send_message(
+        chat_id,
+        add_emoji_prefix(
+            "Хочешь написать письмо себе в будущее.\n\n"
+            "Выбери срок, через который я тебе его пришлю:\n"
+            "• 7 — через неделю\n"
+            "• 14 — через две недели\n"
+            "• 30 — через месяц\n\n"
+            "Просто напиши цифру: 7, 14 или 30."
+        )
+    )
+    set_dialog_state(chat_id, "await_letter_period", None)
+
+
+def handle_letter_period(chat_id: int, text: str):
+    norm = normalize_text_for_match(text)
+    if norm not in ["7", "14", "30"]:
+        send_message(
+            chat_id,
+            add_emoji_prefix(
+                "Не совсем поняла срок.\n"
+                "Напиши, пожалуйста, только цифру: 7, 14 или 30."
+            )
+        )
+        return
+    days = int(norm)
+    set_dialog_state(chat_id, "await_letter_text", {"days": days})
+    send_message(
+        chat_id,
+        add_emoji_prefix(
+            "Хорошо. Напиши сейчас письмо себе — той, которая будет читать его через этот срок.\n\n"
+            "Можно рассказать, как ты себя чувствуешь сейчас, что тебе важно, о чём мечтаешь или что хочешь себе напомнить."
+        )
+    )
+
+
+def handle_letter_text(chat_id: int, text: str, meta: dict):
+    days = meta.get("days", 7)
+    cleaned = text.strip()
+    if not cleaned:
+        send_message(
+            chat_id,
+            add_emoji_prefix(
+                "Похоже, письмо получилось пустым.\n"
+                "Попробуй написать хотя бы пару строк для себя из будущего."
+            )
+        )
+        return
+
+    add_future_letter(chat_id, cleaned, days)
+    clear_dialog_state(chat_id)
+
+    target_date = (datetime.now() + timedelta(days=days)).strftime("%d.%m.%Y")
+    send_message(
+        chat_id,
+        add_emoji_prefix(
+            f"Я сохраню это письмо и пришлю его тебе примерно {target_date}.\n"
+            "Когда получишь его, это будет небольшая встреча с собой из прошлого."
+        )
+    )
+
+
+# --------------------------
+# Микродиалоги (маленькая опора)
+# --------------------------
+
+def start_small_joy_dialog(chat_id: int):
+    """
+    После грусти/тревоги/усталости предлагаем найти одну маленькую опору.
+    """
+    send_message(
+        chat_id,
+        add_emoji_prefix(
+            "Если захочешь, можем попробовать найти одну маленькую опору в этом дне.\n"
+            "Напиши о моменте, который был хотя бы чуть-чуть мягче остальных."
+        )
+    )
+    set_dialog_state(chat_id, "await_small_joy", None)
+
+
+def handle_small_joy_reply(chat_id: int, text: str):
+    cleaned = clean_text_pipeline(text)
+    if not cleaned:
+        send_message(
+            chat_id,
+            add_emoji_prefix(
+                "Мне не удалось ничего сохранить.\n"
+                "Попробуй описать хотя бы маленький момент: еду, паузу, сообщение, взгляд, музыку."
+            )
+        )
+        return
+    add_joy(chat_id, cleaned)
+    clear_dialog_state(chat_id)
+    send_message(
+        chat_id,
+        add_emoji_prefix(
+            "Спасибо, что всё-таки нашла маленькую опору в этом дне. Я её аккуратно сохранила."
+        )
+    )
+    check_and_send_achievements(chat_id)
+
+
+# --------------------------
+# Обработка входящих сообщений
 # --------------------------
 
 def process_incoming_message(update: dict):
@@ -856,12 +1261,15 @@ def process_incoming_message(update: dict):
 
     stripped = text.strip()
 
+    # Команды, которые всегда можно вызвать
     if stripped.startswith("/start"):
+        clear_dialog_state(chat_id)
         send_message(
             chat_id,
             "Привет. Я помогу тебе замечать и сохранять маленькие радости.\n\n"
             "Каждый день можно писать сюда что-то приятное из дня: встречу, вкусный кофе, спокойный вечер.\n"
-            "В 19:00 я напомню, если ты ничего не написала, а в 22:00 пришлю небольшой отчёт за день."
+            "В 19:00 я напомню, если ты ничего не написала, а в 22:00 пришлю небольшой отчёт за день.\n\n"
+            "Если захочешь, можешь ещё написать себе письмо в будущее командой /letter."
         )
         return
 
@@ -869,6 +1277,29 @@ def process_incoming_message(update: dict):
         send_stats(chat_id)
         return
 
+    if stripped.startswith("/letter"):
+        handle_letter_command(chat_id)
+        return
+
+    # Сначала смотрим состояние диалога
+    state, meta = get_dialog_state(chat_id)
+
+    # Если ждём маленькую опору
+    if state == "await_small_joy":
+        handle_small_joy_reply(chat_id, text)
+        return
+
+    # Если ждём выбор срока письма
+    if state == "await_letter_period":
+        handle_letter_period(chat_id, text)
+        return
+
+    # Если ждём текст письма
+    if state == "await_letter_text":
+        handle_letter_text(chat_id, text, meta or {})
+        return
+
+    # Дальше — обычная логика
     cleaned = clean_text_pipeline(text)
     if not cleaned:
         send_message(
@@ -878,10 +1309,12 @@ def process_incoming_message(update: dict):
         )
         return
 
+    # Приветствие — отвечаем, но НЕ записываем как радость
     if is_greeting_message(cleaned):
         send_message(chat_id, get_greeting_response())
         return
 
+    # очень тяжёлые сообщения
     if is_severe_sad_message(cleaned):
         send_message(
             chat_id,
@@ -894,27 +1327,34 @@ def process_incoming_message(update: dict):
         )
         add_sad_event(chat_id)
         maybe_offer_ritual(chat_id)
+        # здесь без микродиалога, чтобы не давить
         return
 
+    # тревога
     if is_anxiety_message(cleaned):
         send_message(chat_id, get_anxiety_response())
         add_sad_event(chat_id)
         maybe_offer_ritual(chat_id)
+        start_small_joy_dialog(chat_id)
         return
 
+    # усталость
     if is_tired_message(cleaned):
         send_message(chat_id, get_tired_response())
         add_sad_event(chat_id)
         maybe_offer_ritual(chat_id)
+        start_small_joy_dialog(chat_id)
         return
 
+    # грусть / «ничего хорошего»
     if is_sad_message(cleaned):
         send_message(chat_id, get_sad_response())
         add_sad_event(chat_id)
         maybe_offer_ritual(chat_id)
+        start_small_joy_dialog(chat_id)
         return
 
-    # Нейтральные фразы "не знаю, что написать" — не записываем как радость
+    # нейтральные фразы "не знаю, что написать" — не записываем как радость
     if is_no_joy_message(cleaned):
         send_message(chat_id, get_no_joy_response())
         return
@@ -926,26 +1366,66 @@ def process_incoming_message(update: dict):
 
 
 # --------------------------
-# Еженедельный отчёт (пока выключен)
+# Еженедельный и месячный раннеры
 # --------------------------
 
-def weekly_job_runner():
-    print("Weekly job runner started.")
-    already_sent_for_week = set()
+def weekly_summary_runner():
+    """
+    Воскресенье 22:15 — недельный обзор.
+    """
+    print("Weekly summary runner started.")
+    sent_weeks = set()
 
     while True:
         now = datetime.now()
-        if now.isoweekday() == 7 and now.hour == 19:
-            year, week_num, _ = now.isocalendar()
-            key = (year, week_num)
-            if key not in already_sent_for_week:
-                print("Sending weekly reports...")
+        today = now.date()
+        year, week_num, _ = today.isocalendar()
+        key = (year, week_num)
+
+        # очищаем старые ключи
+        for k in list(sent_weeks):
+            if k[0] != year or k[1] != week_num:
+                sent_weeks.remove(k)
+
+        if now.isoweekday() == 7 and now.hour == 22 and now.minute == 15:
+            if key not in sent_weeks:
+                print("Sending weekly human summaries...")
                 for user_id in get_all_user_ids():
                     try:
-                        send_weekly_report_for_user(user_id)
+                        send_weekly_human_summary(user_id)
                     except Exception as e:
-                        print(f"Error sending weekly report to {user_id}:", e)
-                already_sent_for_week.add(key)
+                        print(f"Error sending weekly summary to {user_id}:", e)
+                sent_weeks.add(key)
+
+        time.sleep(60)
+
+
+def monthly_summary_runner():
+    """
+    1-е число месяца 20:00 — обзор за прошлый месяц.
+    """
+    print("Monthly summary runner started.")
+    sent_months = set()  # (year, month)
+
+    while True:
+        now = datetime.now()
+        today = now.date()
+        ym = (today.year, today.month)
+
+        for k in list(sent_months):
+            if k != ym:
+                sent_months.remove(k)
+
+        if today.day == 1 and now.hour == 20 and now.minute == 0:
+            if ym not in sent_months:
+                print("Sending monthly human summaries...")
+                for user_id in get_all_user_ids():
+                    try:
+                        send_monthly_human_summary(user_id)
+                    except Exception as e:
+                        print(f"Error sending monthly summary to {user_id}:", e)
+                sent_months.add(ym)
+
         time.sleep(60)
 
 
@@ -1014,6 +1494,82 @@ def daily_report_runner():
 
 
 # --------------------------
+# Раннер писем в будущее
+# --------------------------
+
+def future_letters_runner():
+    print("Future letters runner started.")
+    while True:
+        try:
+            letters = get_due_letters()
+            if letters:
+                print(f"Sending {len(letters)} future letters...")
+            for letter_id, chat_id, text, send_at, created_at in letters:
+                try:
+                    # считаем разницу в днях
+                    try:
+                        dt_created = datetime.fromisoformat(created_at)
+                        dt_send = datetime.fromisoformat(send_at)
+                        days_diff = (dt_send.date() - dt_created.date()).days
+                    except Exception:
+                        days_diff = None
+
+                    if days_diff and days_diff > 0:
+                        intro = (
+                            "Сегодня у тебя небольшая встреча с собой из прошлого.\n\n"
+                            f"Это письмо ты написала примерно {days_diff} дней назад:"
+                        )
+                    else:
+                        intro = (
+                            "Сегодня у тебя небольшая встреча с собой из прошлого.\n\n"
+                            "Вот письмо, которое ты написала раньше:"
+                        )
+
+                    full = f"{add_emoji_prefix(intro)}\n\n{text}"
+                    send_message(chat_id, full)
+                    mark_letter_sent(letter_id)
+                except Exception as e:
+                    print(f"Error sending future letter {letter_id}:", e)
+        except Exception as e:
+            print("future_letters_runner error:", e)
+
+        time.sleep(60)
+
+
+# --------------------------
+# Ежедневный отчёт за день (уже определён выше)
+# --------------------------
+
+def send_daily_report_for_user(chat_id: int):
+    today_local = datetime.now().date()
+    joys = get_joys_for_date(chat_id, today_local)
+
+    if not joys:
+        send_message(
+            chat_id,
+            add_emoji_prefix(
+                "Сегодня у меня нет сохранённых радостей.\n"
+                "Если день был тяжёлым — так тоже бывает. Завтра можно попробовать снова."
+            )
+        )
+        return
+
+    lines = []
+    for created_at, text in joys:
+        try:
+            dt = datetime.fromisoformat(created_at)
+            time_str = dt.strftime("%H:%M")
+        except Exception:
+            time_str = created_at[11:16]
+        emo = random.choice(JOY_EMOJIS)
+        lines.append(f"{emo} {time_str} — {text}")
+
+    header = "Вот что хорошего ты отметила сегодня:"
+    body = "\n".join(lines)
+    send_message(chat_id, f"{header}\n\n{body}")
+
+
+# --------------------------
 # main
 # --------------------------
 
@@ -1025,6 +1581,15 @@ def main():
 
     t_daily_report = threading.Thread(target=daily_report_runner, daemon=True)
     t_daily_report.start()
+
+    t_weekly = threading.Thread(target=weekly_summary_runner, daemon=True)
+    t_weekly.start()
+
+    t_monthly = threading.Thread(target=monthly_summary_runner, daemon=True)
+    t_monthly.start()
+
+    t_letters = threading.Thread(target=future_letters_runner, daemon=True)
+    t_letters.start()
 
     offset = None
     print("ChudoMoodo bot polling started...")
