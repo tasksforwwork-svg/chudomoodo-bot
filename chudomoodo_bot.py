@@ -347,7 +347,7 @@ GREETING_PATTERNS = [
     "как ты-как ты-как ты", "как жизнь-как жизнь-как жизнь", "что нового-что нового-что нового",
     "как настроение-как настроение-как настроение", "приветики-приветики-приветики-приветики",
     "здрасьте-здрасьте-здрасьте", "здрасте-здрасте-здрасте", "приветствую вас-приветствую вас-приветствую вас",
-    "доброго времени суток-доброго времени суток-доброго времени суток",
+    "доброго времени суток-доброго времени суток  -доброго времени суток",
     "доброго здоровья-доброго здоровья-доброго здоровья", "мое почтение-мое почтение-мое почтение",
     "приветствую-приветствую-приветствую-приветствую-приветствую",
     "здравия желаю-здравия желаю-здравия желаю", "доброе утрочки, -доброе утрочки-доброе утрочки",
@@ -539,6 +539,16 @@ def init_db():
         )
         """
     )
+    # Для предотвращения повторной обработки сообщений
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS processed_messages (
+            message_id INTEGER PRIMARY KEY,
+            chat_id INTEGER NOT NULL,
+            processed_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -693,6 +703,40 @@ def mark_reminder_sent(chat_id: int, reminder_type: str):
         conn.commit()
     except sqlite3.IntegrityError:
         # Уже было отправлено сегодня - ничего страшного
+        pass
+    finally:
+        conn.close()
+
+
+def is_message_processed(message_id: int) -> bool:
+    """Проверяет, было ли уже обработано сообщение"""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM processed_messages WHERE message_id = ?",
+        (message_id,),
+    )
+    count = cur.fetchone()[0]
+    conn.close()
+    return count > 0
+
+
+def mark_message_processed(message_id: int, chat_id: int):
+    """Отмечает, что сообщение было обработано"""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    processed_at = datetime.now().isoformat(timespec="seconds")
+    try:
+        cur.execute(
+            """
+            INSERT INTO processed_messages (message_id, chat_id, processed_at)
+            VALUES (?, ?, ?)
+            """,
+            (message_id, chat_id, processed_at),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # Сообщение уже было обработано
         pass
     finally:
         conn.close()
@@ -883,8 +927,20 @@ def process_incoming_message(update: dict):
     chat_id = chat.get("id")
     if chat_id is None:
         return
+    
+    message_id = msg.get("message_id")
+    if message_id is None:
+        return
+    
+    # Проверяем, не обрабатывали ли мы уже это сообщение
+    if is_message_processed(message_id):
+        print(f"Message {message_id} already processed, skipping")
+        return
+    
     text = msg.get("text", "")
     if not text:
+        # Отмечаем сообщение как обработанное даже если оно пустое
+        mark_message_processed(message_id, chat_id)
         return
 
     stripped = text.strip()
@@ -907,6 +963,7 @@ def process_incoming_message(update: dict):
                     "Отменила текущий диалог. Можно просто продолжить писать радости, когда захочется."
                 )
             )
+        mark_message_processed(message_id, chat_id)
         return
 
     # Команды
@@ -921,6 +978,7 @@ def process_incoming_message(update: dict):
             "Если вдруг по ходу диалога или письма ты передумаешь — просто напиши /cancel.\n\n"
             "Можешь начать уже сейчас: напиши одну маленькую радость или тёплый момент из этого дня."
         )
+        mark_message_processed(message_id, chat_id)
         return
 
     if stripped.startswith("/stats"):
@@ -937,10 +995,12 @@ def process_incoming_message(update: dict):
                 f"{random.choice(STATS_EMOJIS)} У тебя уже {total} записанных радостей!\n"
                 "Это замечательно, что ты замечаешь хорошее в своих днях."
             )
+        mark_message_processed(message_id, chat_id)
         return
 
     if stripped.startswith("/letter"):
         handle_letter_command(chat_id)
+        mark_message_processed(message_id, chat_id)
         return
 
     # Состояние диалога
@@ -948,9 +1008,11 @@ def process_incoming_message(update: dict):
     
     if state == "await_letter_period":
         handle_letter_period(chat_id, text)
+        mark_message_processed(message_id, chat_id)
         return
     if state == "await_letter_text":
         handle_letter_text(chat_id, text, meta or {})
+        mark_message_processed(message_id, chat_id)
         return
 
     # Проверка на мат - теперь проверяем ДО приветствий и эмоциональных состояний
@@ -960,11 +1022,13 @@ def process_incoming_message(update: dict):
             chat_id,
             add_emoji_prefix("Похоже, сегодня был трудный день! Понимаю, но давай попробуем обойтись без резких слов")
         )
+        mark_message_processed(message_id, chat_id)
         return
 
     # Приветствие — отвечаем, но НЕ записываем как радость
     if is_greeting_message(stripped):
         send_message(chat_id, get_greeting_response())
+        mark_message_processed(message_id, chat_id)
         return
 
     # НОВАЯ ЛОГИКА: проверяем ВСЕ состояния и выбираем ТОЛЬКО ОДНО
@@ -982,6 +1046,7 @@ def process_incoming_message(update: dict):
             )
         )
         add_sad_event(chat_id)
+        mark_message_processed(message_id, chat_id)
         return
 
     # Затем проверяем другие эмоциональные состояния
@@ -990,22 +1055,24 @@ def process_incoming_message(update: dict):
     if is_anxiety_message(stripped):
         send_message(chat_id, get_anxiety_response())
         add_sad_event(chat_id)
+        mark_message_processed(message_id, chat_id)
         return
 
     if is_tired_message(stripped):
         send_message(chat_id, get_tired_response())
         add_sad_event(chat_id)
+        mark_message_processed(message_id, chat_id)
         return
 
     if is_sad_message(stripped):
-        # ВАЖНО: Проверяем, что это именно грусть, а не совпадение с другими состояниями
-        # Например, "все плохо" - это грусть, а не тревога или усталость
         send_message(chat_id, get_sad_response())
         add_sad_event(chat_id)
+        mark_message_processed(message_id, chat_id)
         return
 
     if is_no_joy_message(stripped):
         send_message(chat_id, get_no_joy_response())
+        mark_message_processed(message_id, chat_id)
         return
 
     # Если дошли сюда - это обычная радость
@@ -1016,10 +1083,12 @@ def process_incoming_message(update: dict):
             "Мне не удалось ничего сохранить.\n"
             "Попробуй написать чуть конкретнее, что тебя сегодня порадовало."
         )
+        mark_message_processed(message_id, chat_id)
         return
 
     add_joy(chat_id, cleaned)
     send_message(chat_id, get_joy_response(chat_id))
+    mark_message_processed(message_id, chat_id)
 
 
 # --------------------------
@@ -1209,27 +1278,17 @@ def main():
     scheduler_thread.start()
     
     offset = None
-    processed_updates = set()
     
     while True:
         try:
             updates = get_updates(offset, POLL_TIMEOUT)
             for update in updates:
                 update_id = update.get("update_id")
-                
-                # Проверяем, не обрабатывали ли мы уже этот update
-                if update_id in processed_updates:
+                if update_id is not None:
                     offset = update_id + 1
-                    continue
-                    
-                process_incoming_message(update)
-                processed_updates.add(update_id)
-                offset = update_id + 1
                 
-                # Очищаем старые update_id чтобы не накапливать слишком много
-                if len(processed_updates) > 1000:
-                    # Оставляем только последние 500
-                    processed_updates = set(list(processed_updates)[-500:])
+                # Обрабатываем сообщение
+                process_incoming_message(update)
                     
             time.sleep(POLL_SLEEP)
         except Exception as e:
