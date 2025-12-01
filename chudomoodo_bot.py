@@ -945,6 +945,10 @@ def process_incoming_message(update: dict):
 
     stripped = text.strip()
 
+    # Сначала отмечаем сообщение как обработанное, чтобы избежать повторной обработки
+    # при любых сценариях
+    mark_message_processed(message_id, chat_id)
+
     # Глобальная отмена - имеет высший приоритет
     if stripped.startswith("/cancel"):
         state, _ = get_dialog_state(chat_id)
@@ -963,7 +967,6 @@ def process_incoming_message(update: dict):
                     "Отменила текущий диалог. Можно просто продолжить писать радости, когда захочется."
                 )
             )
-        mark_message_processed(message_id, chat_id)
         return
 
     # Команды
@@ -978,7 +981,6 @@ def process_incoming_message(update: dict):
             "Если вдруг по ходу диалога или письма ты передумаешь — просто напиши /cancel.\n\n"
             "Можешь начать уже сейчас: напиши одну маленькую радость или тёплый момент из этого дня."
         )
-        mark_message_processed(message_id, chat_id)
         return
 
     if stripped.startswith("/stats"):
@@ -995,12 +997,10 @@ def process_incoming_message(update: dict):
                 f"{random.choice(STATS_EMOJIS)} У тебя уже {total} записанных радостей!\n"
                 "Это замечательно, что ты замечаешь хорошее в своих днях."
             )
-        mark_message_processed(message_id, chat_id)
         return
 
     if stripped.startswith("/letter"):
         handle_letter_command(chat_id)
-        mark_message_processed(message_id, chat_id)
         return
 
     # Состояние диалога
@@ -1008,11 +1008,9 @@ def process_incoming_message(update: dict):
     
     if state == "await_letter_period":
         handle_letter_period(chat_id, text)
-        mark_message_processed(message_id, chat_id)
         return
     if state == "await_letter_text":
         handle_letter_text(chat_id, text, meta or {})
-        mark_message_processed(message_id, chat_id)
         return
 
     # Проверка на мат - теперь проверяем ДО приветствий и эмоциональных состояний
@@ -1022,16 +1020,14 @@ def process_incoming_message(update: dict):
             chat_id,
             add_emoji_prefix("Похоже, сегодня был трудный день! Понимаю, но давай попробуем обойтись без резких слов")
         )
-        mark_message_processed(message_id, chat_id)
         return
 
     # Приветствие — отвечаем, но НЕ записываем как радость
     if is_greeting_message(stripped):
         send_message(chat_id, get_greeting_response())
-        mark_message_processed(message_id, chat_id)
         return
 
-    # НОВАЯ ЛОГИКА: проверяем ВСЕ состояния и выбираем ТОЛЬКО ОДНО
+    # Проверяем ВСЕ состояния и выбираем ТОЛЬКО ОДНО
     # в порядке приоритета от самого тяжелого к самому легкому
     
     # Сначала проверяем самые тяжелые состояния
@@ -1046,7 +1042,6 @@ def process_incoming_message(update: dict):
             )
         )
         add_sad_event(chat_id)
-        mark_message_processed(message_id, chat_id)
         return
 
     # Затем проверяем другие эмоциональные состояния
@@ -1055,24 +1050,20 @@ def process_incoming_message(update: dict):
     if is_anxiety_message(stripped):
         send_message(chat_id, get_anxiety_response())
         add_sad_event(chat_id)
-        mark_message_processed(message_id, chat_id)
         return
 
     if is_tired_message(stripped):
         send_message(chat_id, get_tired_response())
         add_sad_event(chat_id)
-        mark_message_processed(message_id, chat_id)
         return
 
     if is_sad_message(stripped):
         send_message(chat_id, get_sad_response())
         add_sad_event(chat_id)
-        mark_message_processed(message_id, chat_id)
         return
 
     if is_no_joy_message(stripped):
         send_message(chat_id, get_no_joy_response())
-        mark_message_processed(message_id, chat_id)
         return
 
     # Если дошли сюда - это обычная радость
@@ -1083,12 +1074,10 @@ def process_incoming_message(update: dict):
             "Мне не удалось ничего сохранить.\n"
             "Попробуй написать чуть конкретнее, что тебя сегодня порадовало."
         )
-        mark_message_processed(message_id, chat_id)
         return
 
     add_joy(chat_id, cleaned)
     send_message(chat_id, get_joy_response(chat_id))
-    mark_message_processed(message_id, chat_id)
 
 
 # --------------------------
