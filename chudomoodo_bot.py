@@ -18,7 +18,8 @@ Telegram-бот "Дневник маленьких радостей".
 - расширенные словари грусти, усталости, тревоги и «не знаю, что написать»;
 - более широкое распознавание приветствий;
 - отчёт за день включает записанные радости за день;
-- на одну эмоцию — один ответ (без дублирующих сообщений).
+- на одну эмоцию — один ответ (без дублирующих сообщений);
+- получение отчета о записанных радостях по запросу "wantnow".
 """
 
 import os
@@ -351,7 +352,7 @@ GREETING_PATTERNS = [
     "доброго здоровья-доброго здоровья-доброго здоровья", "мое почтение-мое почтение-мое почтение",
     "приветствую-приветствую-приветствую-приветствую-приветствую",
     "здравия желаю-здравия желаю-здравия желаю", "доброе утрочки, -доброе утрочки-доброе утрочки",
-    "добрый вечерочек-добрый вечерочек-добрый вечерочек", "доброй ноченьки-доброй ноченьки-доброй ноченьки"
+    "добрый вечерочек1-добрый вечерочек-добрый вечерочек", "доброй ноченьки-доброй ноченьки-доброй ноченьки"
 ]
 
 # Сообщения для отмены диалога/письма
@@ -560,6 +561,23 @@ def get_todays_joys(chat_id: int) -> List[str]:
         (chat_id, today),
     )
     joys = [row[0] for row in cur.fetchall()]
+    conn.close()
+    return joys
+
+def get_all_joys(chat_id: int) -> List[Tuple[str, str]]:
+    """Получить все радости пользователя с датами"""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT text, created_at
+        FROM joys
+        WHERE chat_id = ?
+        ORDER BY created_at DESC
+        """,
+        (chat_id,),
+    )
+    joys = [(row[0], row[1]) for row in cur.fetchall()]
     conn.close()
     return joys
 
@@ -827,6 +845,11 @@ def is_greeting_message(text: str) -> bool:
     
     return words[0] in greeting_starts and len(words) <= 3
 
+def is_wantnow_message(text: str) -> bool:
+    """Проверяет, является ли сообщение запросом на отчет 'wantnow'"""
+    lower = normalize_text_for_match(text)
+    return lower == "wantnow"
+
 # --------------------------
 # Генерация ответов
 # --------------------------
@@ -861,6 +884,52 @@ def get_joy_response(chat_id: int) -> str:
             idx = random.randrange(len(JOY_RESPONSES))
     LAST_JOY_INDEX[chat_id] = idx
     return add_emoji_prefix(JOY_RESPONSES[idx])
+
+def get_wantnow_report(chat_id: int) -> str:
+    """Генерирует отчет о всех записанных радостях"""
+    joys = get_all_joys(chat_id)
+    
+    if not joys:
+        return add_emoji_prefix("У тебя пока нет записанных радостей. Но это не беда — можно начать прямо сейчас!")
+    
+    # Группируем радости по датам
+    joys_by_date = {}
+    for text, created_at in joys:
+        date_str = created_at.split('T')[0]  # Получаем только дату YYYY-MM-DD
+        if date_str not in joys_by_date:
+            joys_by_date[date_str] = []
+        joys_by_date[date_str].append(text)
+    
+    # Сортируем даты по убыванию (новые сверху)
+    sorted_dates = sorted(joys_by_date.keys(), reverse=True)
+    
+    report = f"{random.choice(JOY_EMOJIS)} Вот все твои записанные радости:\n\n"
+    
+    for date_str in sorted_dates:
+        # Преобразуем дату в читаемый формат
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+        today = date.today()
+        
+        if date_obj == today:
+            date_display = "Сегодня"
+        elif date_obj == today - timedelta(days=1):
+            date_display = "Вчера"
+        elif date_obj == today - timedelta(days=2):
+            date_display = "Позавчера"
+        else:
+            date_display = date_obj.strftime("%d.%m.%Y")
+        
+        report += f"📅 {date_display}:\n"
+        
+        for i, joy in enumerate(joys_by_date[date_str], 1):
+            report += f"  {i}. {joy}\n"
+        
+        report += "\n"
+    
+    total_count = len(joys)
+    report += f"\nВсего радостей: {total_count}"
+    
+    return report
 
 # --------------------------
 # Обработка сообщений - ОСНОВНАЯ ФУНКЦИЯ
@@ -926,14 +995,20 @@ def handle_message(chat_id: int, text: str) -> bool:
     # 3. Проверка на мат
     if contains_profanity(text):
         send_message(chat_id, add_emoji_prefix("Похоже, сегодня был трудный день! Давай попробуем обойтись без резких слов"))
-        return True  # Ключевое исправление: завершаем функцию здесь!
+        return True
     
-    # 4. Приветствие
+    # 4. Проверка на запрос отчета "wantnow"
+    if is_wantnow_message(stripped):
+        report = get_wantnow_report(chat_id)
+        send_message(chat_id, report)
+        return True
+    
+    # 5. Приветствие
     if is_greeting_message(stripped):
         send_message(chat_id, get_greeting_response())
         return True
     
-    # 5. Эмоциональные состояния - СТРОГАЯ ПОСЛЕДОВАТЕЛЬНОСТЬ
+    # 6. Эмоциональные состояния - СТРОГАЯ ПОСЛЕДОВАТЕЛЬНОСТЬ
     # Каждое условие завершается return, гарантируя ОДИН ответ
     
     if is_severe_sad_message(stripped):
@@ -964,14 +1039,14 @@ def handle_message(chat_id: int, text: str) -> bool:
         send_message(chat_id, get_no_joy_response())
         return True
     
-    # 6. Обычная радость
+    # 7. Обычная радость
     cleaned = clean_text_pipeline(text)
     if cleaned:
         add_joy(chat_id, cleaned)
         send_message(chat_id, get_joy_response(chat_id))
         return True
     
-    # 7. Если ничего не подошло
+    # 8. Если ничего не подошло
     send_message(chat_id, "Не совсем поняла... Можешь написать что-то ещё?")
     return True
 
