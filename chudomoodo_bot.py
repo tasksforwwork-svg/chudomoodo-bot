@@ -1078,6 +1078,9 @@ def process_incoming_message(update: dict):
         return
 
     # Проверяем состояния по одному и возвращаемся после первого совпадения
+    # Используем IF-ELIF цепочку вместо отдельных IF с return
+    # Это гарантирует, что будет обработан только ОДИН тип сообщения
+    
     if is_severe_sad_message(stripped):
         send_message(
             chat_id,
@@ -1090,23 +1093,23 @@ def process_incoming_message(update: dict):
         )
         add_sad_event(chat_id)
         return
-
-    if is_anxiety_message(stripped):
+        
+    elif is_anxiety_message(stripped):
         send_message(chat_id, get_anxiety_response())
         add_sad_event(chat_id)
         return
-
-    if is_tired_message(stripped):
+        
+    elif is_tired_message(stripped):
         send_message(chat_id, get_tired_response())
         add_sad_event(chat_id)
         return
-
-    if is_sad_message(stripped):
+        
+    elif is_sad_message(stripped):
         send_message(chat_id, get_sad_response())
         add_sad_event(chat_id)
         return
-
-    if is_no_joy_message(stripped):
+        
+    elif is_no_joy_message(stripped):
         send_message(chat_id, get_no_joy_response())
         return
 
