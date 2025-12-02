@@ -19,7 +19,7 @@ Telegram-бот "Дневник маленьких радостей".
 - более широкое распознавание приветствий;
 - отчёт за день включает записанные радости за день;
 - на одну эмоцию — один ответ (без дублирующих сообщений);
-- получение отчета о записанных радостях по команде /wantnow.
+- получение отчета о записанных радостях по запросу "wantnow".
 """
 
 import os
@@ -210,7 +210,7 @@ ANXIETY_PATTERNS = [
     "страх выйти из дома", "клаустрофобия", "боюсь закрытых пространств", "страх лифтов",
     "панические атаки", "приступы паники", "внезапный страх", "сердце выскакивает", "пульс зашкаливает",
     "давление подскакивает", "не хватает воздуха", "задыхаюсь", "одышка от страха", "тошнота от тревоги",
-    "мутит от страха", "желудок сжимается", "головокружение", "земля уходит из.под ног", "все плывет",
+    "мутит от страха", "желудок сжимается", "головокружение", "земля уходит из-под ног", "все плывет",
     "дереализация", "мир кажется нереальным", "все как в тумане", "деперсонализация",
     "чувствую себя не в своем теле", "отдельно от себя", "тремор", "дрожь в тело", "трясутся колени",
     "потливость", "бросает в жар", "холодный пот", "сухость во рту", "ком в горле", "не могу говорить",
@@ -845,6 +845,11 @@ def is_greeting_message(text: str) -> bool:
     
     return words[0] in greeting_starts and len(words) <= 3
 
+def is_wantnow_message(text: str) -> bool:
+    """Проверяет, является ли сообщение запросом на отчет 'wantnow'"""
+    lower = normalize_text_for_match(text)
+    return lower == "wantnow"
+
 # --------------------------
 # Генерация ответов
 # --------------------------
@@ -978,13 +983,7 @@ def handle_message(chat_id: int, text: str) -> bool:
             send_message(chat_id, add_emoji_prefix("Нечего отменять."))
         return True
     
-    # 2. Команда /wantnow для получения отчета
-    if stripped.startswith("/wantnow"):
-        report = get_wantnow_report(chat_id)
-        send_message(chat_id, report)
-        return True
-    
-    # 3. Проверка состояния диалога (письмо в будущее)
+    # 2. Проверка состояния диалога (письмо в будущее)
     state, meta = get_dialog_state(chat_id)
     if state == "await_letter_period":
         handle_letter_period(chat_id, text)
@@ -993,9 +992,15 @@ def handle_message(chat_id: int, text: str) -> bool:
         handle_letter_text(chat_id, text, meta or {})
         return True
     
-    # 4. Проверка на мат
+    # 3. Проверка на мат
     if contains_profanity(text):
         send_message(chat_id, add_emoji_prefix("Похоже, сегодня был трудный день! Давай попробуем обойтись без резких слов"))
+        return True
+    
+    # 4. Проверка на запрос отчета "wantnow"
+    if is_wantnow_message(stripped):
+        report = get_wantnow_report(chat_id)
+        send_message(chat_id, report)
         return True
     
     # 5. Приветствие
@@ -1255,3 +1260,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
