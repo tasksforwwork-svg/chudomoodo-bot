@@ -1,4 +1,4 @@
-"""
+""" 
 chudomoodo_bot.py
 
 Telegram-бот "Дневник маленьких радостей".
@@ -647,7 +647,7 @@ def get_all_user_ids() -> List[int]:
 
 
 def is_update_processed(update_id: int) -> bool:
-    """Проверяет, был ли update уже обработан"""
+    """Проверяет, был ли update уже обработан (не используется в новой схеме, оставлено для совместимости)."""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
@@ -659,8 +659,12 @@ def is_update_processed(update_id: int) -> bool:
     return count > 0
 
 
-def mark_update_processed(update_id: int):
-    """Отмечает update как обработанный"""
+def mark_update_processed(update_id: int) -> bool:
+    """
+    Пытается пометить update как обработанный.
+    Возвращает True, если запись добавлена впервые.
+    Возвращает False, если такой update_id уже есть (значит, другой процесс уже обработал его).
+    """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     processed_at = datetime.now().isoformat(timespec="seconds")
@@ -670,9 +674,10 @@ def mark_update_processed(update_id: int):
             (update_id, processed_at)
         )
         conn.commit()
+        return True
     except sqlite3.IntegrityError:
-        # Уже обработан
-        pass
+        # Уже обработан в другом месте/процессе
+        return False
     finally:
         conn.close()
 
@@ -916,7 +921,7 @@ def is_greeting_message(text: str) -> bool:
         "здравствуй", "здравствуйте", "добрый", "доброе", "доброй",
         "хай", "хэй", "хей", "хелло", "hello", "hi", "hey",
         "privet", "privetik",
-        "ghbdtn",  # привет в англ. раскладке
+        "ghbdtn",
         "йоу", "йо", "ку",
         "здорово", "здарова", "салют", "шалом", "бонжур", "хола"
     }
@@ -1233,13 +1238,14 @@ def main_loop():
                 if update_id is None:
                     continue
 
-                if update_id > last_update_id:
-                    last_update_id = update_id
-
-                # Проверяем, не обрабатывали ли мы уже этот update
-                if is_update_processed(update_id):
+                # Сначала пробуем пометить update как новый.
+                # Если не получилось — он уже был обработан другим процессом/запуском.
+                if not mark_update_processed(update_id):
                     print(f"Update {update_id} уже обработан, пропускаем")
                     continue
+
+                if update_id > last_update_id:
+                    last_update_id = update_id
 
                 # Обрабатываем сообщение
                 if "message" in update:
@@ -1251,9 +1257,6 @@ def main_loop():
                     if chat_id and text:
                         print(f"Обрабатываем сообщение {update_id}: '{text[:50]}...'")
                         handle_message(chat_id, text)
-
-                # Отмечаем update как обработанный
-                mark_update_processed(update_id)
 
             time.sleep(POLL_SLEEP)
 
@@ -1358,4 +1361,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
