@@ -547,36 +547,22 @@ def get_joy_count(chat_id: int) -> int:
     return count
 
 def get_todays_joys(chat_id: int) -> List[str]:
-    """
-    Радости за сегодняшний календарный день.
-    Специально выбираем по диапазону дат, а не по substr(),
-    чтобы точно учитывать все записи независимо от формата created_at.
-    """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-
-    start = datetime.combine(date.today(), datetime.min.time())
-    end = start + timedelta(days=1)
-
+    today = date.today().isoformat()
     cur.execute(
         """
         SELECT text
         FROM joys
         WHERE chat_id = ?
-          AND created_at >= ?
-          AND created_at < ?
+          AND substr(created_at, 1, 10) = ?
         ORDER BY created_at ASC
         """,
-        (
-            chat_id,
-            start.isoformat(timespec="seconds"),
-            end.isoformat(timespec="seconds"),
-        ),
+        (chat_id, today),
     )
     joys = [row[0] for row in cur.fetchall()]
     conn.close()
     return joys
-
 
 def get_all_joys(chat_id: int) -> List[Tuple[str, str]]:
     """Получить все радости пользователя с датами"""
@@ -742,12 +728,14 @@ def normalize_text_for_match(text: str) -> str:
     normalized = " ".join(normalized.split())
     return normalized
 
+
 def contains_profanity(text: str) -> bool:
     normalized = normalize_text_for_match(text)
     for bad_word in BAD_WORDS:
-        if bad_word in normalized:
+        if f" {bad_word} " in f" {normalized} ":
             return True
     return False
+
 
 def clean_profanity(text: str) -> str:
     words = text.split()
@@ -956,20 +944,20 @@ def handle_message(chat_id: int, text: str) -> bool:
     """
     if not text or not text.strip():
         return True
-
+    
     stripped = text.strip()
-
+    
     # 1. Команды с самым высоким приоритетом
     if stripped.startswith("/start"):
         send_message(
             chat_id,
             "Привет. Я помогу тебе замечать и сохранять маленькие радости.\n\n"
             "Каждый день можно писать сюда что-то приятное из дня.\n"
-            "В 21:00 я напомню, если ты ничего не написала, а в 23:00 пришлю отчёт за день.\n\n"
+            "В 19:00 я напомню, если ты ничего не написала, а в 20:00 пришлю отчёт за день.\n\n"
             "Можешь начать уже сейчас!"
         )
         return True
-
+        
     if stripped.startswith("/stats"):
         total = get_joy_count(chat_id)
         if total == 0:
@@ -983,11 +971,11 @@ def handle_message(chat_id: int, text: str) -> bool:
                 f"{random.choice(STATS_EMOJIS)} У тебя уже {total} записанных радостей!"
             )
         return True
-
+        
     if stripped.startswith("/letter"):
         handle_letter_command(chat_id)
         return True
-
+        
     if stripped.startswith("/cancel"):
         state, _ = get_dialog_state(chat_id)
         clear_dialog_state(chat_id)
@@ -996,8 +984,8 @@ def handle_message(chat_id: int, text: str) -> bool:
         else:
             send_message(chat_id, add_emoji_prefix("Нечего отменять."))
         return True
-
-    # 2. Диалог письма в будущее
+    
+    # 2. Проверка состояния диалога (письмо в будущее)
     state, meta = get_dialog_state(chat_id)
     if state == "await_letter_period":
         handle_letter_period(chat_id, text)
@@ -1005,30 +993,26 @@ def handle_message(chat_id: int, text: str) -> bool:
     if state == "await_letter_text":
         handle_letter_text(chat_id, text, meta or {})
         return True
-
-    # 3. Мат — один спокойный ответ и выходим
+    
+    # 3. Проверка на мат
     if contains_profanity(text):
-        send_message(
-            chat_id,
-            add_emoji_prefix(
-                "Похоже, сегодня был трудный день. "
-                "Давай попробуем обойтись без совсем резких слов, а я помогу поискать что-то поддерживающее."
-            )
-        )
+        send_message(chat_id, add_emoji_prefix("Похоже, сегодня был трудный день! Давай попробуем обойтись без резких слов"))
         return True
-
-    # 4. Запрос отчёта "wantnow"
+    
+    # 4. Проверка на запрос отчета "wantnow"
     if is_wantnow_message(stripped):
         report = get_wantnow_report(chat_id)
         send_message(chat_id, report)
         return True
-
-    # 5. Приветствие (не записываем как радость)
+    
+    # 5. Приветствие
     if is_greeting_message(stripped):
         send_message(chat_id, get_greeting_response())
         return True
-
-    # 6. Эмоциональные состояния (ВАЖНО: строго через if/elif — только один срабатывает)
+    
+    # 6. Эмоциональные состояния - СТРОГАЯ ПОСЛЕДОВАТЕЛЬНОСТЬ
+    # Каждое условие завершается return, гарантируя ОДИН ответ
+    
     if is_severe_sad_message(stripped):
         send_message(
             chat_id,
@@ -1040,40 +1024,33 @@ def handle_message(chat_id: int, text: str) -> bool:
             )
         )
         return True
-
+    
     elif is_anxiety_message(stripped):
         send_message(chat_id, get_anxiety_response())
         return True
-
+    
     elif is_tired_message(stripped):
         send_message(chat_id, get_tired_response())
         return True
-
+    
     elif is_sad_message(stripped):
         send_message(chat_id, get_sad_response())
         return True
-
+    
     elif is_no_joy_message(stripped):
         send_message(chat_id, get_no_joy_response())
         return True
-
-    # 7. Обычная радость (если это не мат, не приветствие и не грусть/усталость/тревога)
+    
+    # 7. Обычная радость
     cleaned = clean_text_pipeline(text)
     if cleaned:
         add_joy(chat_id, cleaned)
         send_message(chat_id, get_joy_response(chat_id))
         return True
-
-    # 8. На всякий случай fallback
-    send_message(
-        chat_id,
-        add_emoji_prefix(
-            "Не до конца поняла, что ты имела в виду. "
-            "Если получится, напиши одну маленькую радость или опору из этого дня."
-        )
-    )
+    
+    # 8. Если ничего не подошло
+    send_message(chat_id, "Не совсем поняла... Можешь написать что-то ещё?")
     return True
-
 
 # --------------------------
 # Письмо себе в будущее (упрощенное)
@@ -1196,56 +1173,48 @@ def main_loop():
 # --------------------------
 
 def send_reminder(chat_id: int):
-    """Напоминание в 21:00, если за день не было ни одной радости."""
     today = date.today()
-
+    
     if has_sent_reminder_today(chat_id, "reminder"):
         return
-
+    
     if not has_joy_for_date(chat_id, today):
         send_message(
             chat_id,
-            f"{random.choice(REMINDER_EMOJIS)} Уже 21:00.\n"
-            "Если сегодня было хоть что-то немного приятное, можешь написать мне об этом."
+            f"{random.choice(REMINDER_EMOJIS)} Привет! Напоминаю, что сегодня ты ещё не записала ни одной радости."
         )
         mark_reminder_sent(chat_id, "reminder")
 
-
 def send_daily_report(chat_id: int):
-    """Ежедневный отчёт в 23:00 с радостями за день."""
     today = date.today()
-
+    
     if has_sent_reminder_today(chat_id, "report"):
         return
-
+    
     joys = get_todays_joys(chat_id)
-
+    
     if joys:
-        report = f"{random.choice(JOY_EMOJIS)} День заканчивается.\n\n"
+        report = f"{random.choice(JOY_EMOJIS)} Вот и подходит к концу этот день.\n\n"
         report += "Вот твои радости за сегодня:\n\n"
         for i, joy in enumerate(joys, 1):
             report += f"{i}. {joy}\n"
-        report += "\nСпокойной ночи."
+        report += "\nСпокойной ночи!"
     else:
-        report = (
-            f"{random.choice(CALM_EMOJIS)} Сегодня у меня нет сохранённых радостей.\n"
-            "Так тоже бывает. Завтра можно попробовать снова."
-        )
-
+        report = f"{random.choice(CALM_EMOJIS)} День подошёл к концу. Завтра будет новый шанс!"
+    
     send_message(chat_id, report)
     mark_reminder_sent(chat_id, "report")
 
-
 def daily_scheduler():
-    """Отдельный поток для ежедневных напоминаний и отчётов."""
+    """Отдельный поток для ежедневных напоминаний"""
     last_reminder_day = None
     last_report_day = None
-
+    
     while True:
         now = datetime.now()
         today = now.date()
-
-        # Напоминание в 21:00
+        
+        # Напоминание в 19:00
         if now.hour == 21 and now.minute == 0:
             if last_reminder_day != today:
                 print(f"Отправляем напоминания в {now}")
@@ -1255,12 +1224,12 @@ def daily_scheduler():
                     except Exception as e:
                         print(f"Ошибка при отправке напоминания пользователю {user_id}: {e}")
                 last_reminder_day = today
-                time.sleep(61)
+                time.sleep(61)  # Ждем минуту
             else:
                 time.sleep(30)
-
-        # Отчёт в 23:00
-        elif now.hour == 23 and now.minute == 0:
+        
+        # Отчёт в 20:00
+        elif now.hour == 22 and now.minute == 0:
             if last_report_day != today:
                 print(f"Отправляем отчёты в {now}")
                 for user_id in get_all_user_ids():
@@ -1269,13 +1238,12 @@ def daily_scheduler():
                     except Exception as e:
                         print(f"Ошибка при отправке отчёта пользователю {user_id}: {e}")
                 last_report_day = today
-                time.sleep(61)
+                time.sleep(61)  # Ждем минуту
             else:
                 time.sleep(30)
-
+        
         else:
             time.sleep(30)
-
 
 # --------------------------
 # MAIN
@@ -1294,5 +1262,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
