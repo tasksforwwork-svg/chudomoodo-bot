@@ -1249,8 +1249,8 @@ def daily_scheduler():
         now = datetime.now()
         today = now.date()
 
-        # Напоминание в 19:00 (по локальному времени сервера, ориентируемся на Минск)
-        if now.hour == 19 and now.minute == 0:
+        # Напоминание в 20:00 (по локальному времени сервера, ориентируемся на Минск)
+        if now.hour == 17 and now.minute == 0:
             if last_reminder_day != today:
                 print(f"Отправляем напоминания в {now}")
                 for user_id in get_all_user_ids():
@@ -1264,7 +1264,7 @@ def daily_scheduler():
                 time.sleep(30)
 
         # Отчёт в 22:00 (по локальному времени сервера, ориентируемся на Минск)
-        elif now.hour == 22 and now.minute == 0:
+        elif now.hour == 19 and now.minute == 0:
             if last_report_day != today:
                 print(f"Отправляем отчёты в {now}")
                 for user_id in get_all_user_ids():
@@ -1338,3 +1338,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
