@@ -29,12 +29,6 @@ from datetime import datetime, timedelta, date
 from typing import List, Tuple, Optional, Dict
 
 import requests
-def empathy_pause():
-    """
-    Небольшая пауза для тревоги, грусти и усталости.
-    Создаёт ощущение, что бот читает и проживает сообщение.
-    """
-    time.sleep(random.uniform(1.5, 3.5))
 
 # --------------------------
 # CONFIG
@@ -1125,19 +1119,16 @@ def handle_message(chat_id: int, text: str) -> bool:
         return True
 
     if is_anxiety_message(stripped):
-    empathy_pause()
-    send_message(chat_id, get_anxiety_response())
-    return True
+        send_message(chat_id, get_anxiety_response())
+        return True
 
     if is_tired_message(stripped):
-    empathy_pause()
-    send_message(chat_id, get_tired_response())
-    return True
+        send_message(chat_id, get_tired_response())
+        return True
 
     if is_sad_message(stripped):
-    empathy_pause()
-    send_message(chat_id, get_sad_response())
-    return True
+        send_message(chat_id, get_sad_response())
+        return True
 
     if is_no_joy_message(stripped):
         send_message(chat_id, get_no_joy_response())
@@ -1145,14 +1136,10 @@ def handle_message(chat_id: int, text: str) -> bool:
 
     # 7. Обычная радость
     cleaned = clean_text_pipeline(text)
-if cleaned:
-    add_joy(chat_id, cleaned)
-
-    # 👇 ЧЕЛОВЕЧЕСКАЯ ПАУЗА
-    maybe_human_pause(chat_id)
-
-    send_message(chat_id, get_joy_response(chat_id))
-    return True
+    if cleaned:
+        add_joy(chat_id, cleaned)
+        send_message(chat_id, get_joy_response(chat_id))
+        return True
 
     # 8. Если ничего не подошло
     send_message(chat_id, add_emoji_prefix("Не совсем поняла... Можешь написать что-то ещё?"))
@@ -1207,7 +1194,7 @@ def daily_scheduler():
         today = now.date()
 
         # Напоминание в 17:00
-        if now.hour == 17 and now.minute == 0:
+        if now.hour == 18 and now.minute == 0:
             if last_reminder_day != today:
                 print(f"Отправляем напоминания в {now}")
                 for user_id in get_all_user_ids():
@@ -1221,7 +1208,7 @@ def daily_scheduler():
                 time.sleep(30)
 
         # Отчёт в 19:00
-        elif now.hour == 19 and now.minute == 0:
+        elif now.hour == 21 and now.minute == 0:
             if last_report_day != today:
                 print(f"Отправляем отчёты в {now}")
                 for user_id in get_all_user_ids():
@@ -1295,8 +1282,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 
 
 
