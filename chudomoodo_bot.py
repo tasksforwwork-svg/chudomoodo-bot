@@ -29,6 +29,12 @@ from datetime import datetime, timedelta, date
 from typing import List, Tuple, Optional, Dict
 
 import requests
+def empathy_pause():
+    """
+    Небольшая пауза для тревоги, грусти и усталости.
+    Создаёт ощущение, что бот читает и проживает сообщение.
+    """
+    time.sleep(random.uniform(1.5, 3.5))
 
 # --------------------------
 # CONFIG
@@ -1119,16 +1125,19 @@ def handle_message(chat_id: int, text: str) -> bool:
         return True
 
     if is_anxiety_message(stripped):
-        send_message(chat_id, get_anxiety_response())
-        return True
+    empathy_pause()
+    send_message(chat_id, get_anxiety_response())
+    return True
 
     if is_tired_message(stripped):
-        send_message(chat_id, get_tired_response())
-        return True
+    empathy_pause()
+    send_message(chat_id, get_tired_response())
+    return True
 
     if is_sad_message(stripped):
-        send_message(chat_id, get_sad_response())
-        return True
+    empathy_pause()
+    send_message(chat_id, get_sad_response())
+    return True
 
     if is_no_joy_message(stripped):
         send_message(chat_id, get_no_joy_response())
@@ -1286,6 +1295,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
