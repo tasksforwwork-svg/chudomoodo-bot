@@ -1136,10 +1136,14 @@ def handle_message(chat_id: int, text: str) -> bool:
 
     # 7. Обычная радость
     cleaned = clean_text_pipeline(text)
-    if cleaned:
-        add_joy(chat_id, cleaned)
-        send_message(chat_id, get_joy_response(chat_id))
-        return True
+if cleaned:
+    add_joy(chat_id, cleaned)
+
+    # 👇 ЧЕЛОВЕЧЕСКАЯ ПАУЗА
+    maybe_human_pause(chat_id)
+
+    send_message(chat_id, get_joy_response(chat_id))
+    return True
 
     # 8. Если ничего не подошло
     send_message(chat_id, add_emoji_prefix("Не совсем поняла... Можешь написать что-то ещё?"))
@@ -1282,6 +1286,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
