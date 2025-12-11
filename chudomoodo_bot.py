@@ -714,10 +714,30 @@ def _is_duplicate_message(chat_id: int, text: str, window_seconds: float = 2.0) 
 
 
 def contains_profanity(text: str) -> bool:
+    """
+    Проверяем мат по регуляркам:
+    - работаем по "словам", а не по произвольным подстрокам;
+    - используем word boundary (\b), чтобы не ловить нормальные слова;
+    - игнорируем слишком короткие корни (меньше 3 символов), чтобы не было
+      ложных срабатываний типа 'радостью' и т.п.
+    """
     normalized = normalize_text_for_match(text)
-    for bad_word in BAD_WORDS:
-        if bad_word in normalized:
+
+    for bad_root in BAD_WORDS:
+        # Слишком короткие корни часто дают ложные срабатывания
+        if len(bad_root) < 3:
+            continue
+
+        # Экранируем корень, чтобы он корректно работал в regex
+        escaped_root = re.escape(bad_root)
+
+        # Ищем корень внутри слова, но с границами слова:
+        #    \b\w*<root>\w*\b  — "слово, внутри которого есть этот корень"
+        pattern = r"\b\w*" + escaped_root + r"\w*\b"
+
+        if re.search(pattern, normalized):
             return True
+
     return False
 
 
@@ -1302,6 +1322,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
