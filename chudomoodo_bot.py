@@ -742,15 +742,29 @@ def contains_profanity(text: str) -> bool:
 
 
 def clean_profanity(text: str) -> str:
+    """
+    Заменяем мат на звёздочки по тем же правилам, что и в contains_profanity:
+    - работаем по словам;
+    - используем регулярки с границами слов;
+    - игнорируем слишком короткие корни.
+    """
     words = text.split()
     cleaned_words = []
 
     for word in words:
-        lower_word = word.lower()
+        # Нормализуем для проверки (нижний регистр, е/ё и т.п.)
+        lower_word = word.lower().replace("ё", "е")
         word_cleaned = False
 
         for bad_root in BAD_WORDS:
-            if bad_root in lower_word:
+            if len(bad_root) < 3:
+                continue
+
+            escaped_root = re.escape(bad_root)
+            pattern = r"\b\w*" + escaped_root + r"\w*\b"
+
+            if re.search(pattern, lower_word):
+                # Маскируем только буквы, оставляя знаки препинания
                 cleaned_word = ""
                 for char in word:
                     if char.isalpha():
@@ -1322,6 +1336,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
