@@ -1172,8 +1172,15 @@ def send_daily_report(chat_id: int):
     joys = get_todays_joys(chat_id)
 
     if joys:
-        report = f"{random.choice(JOY_EMOJIS)} Вот и подходит к концу этот день.\n\n"
-        report += "Вот твои радости за сегодня:\n\n"
+        report_headers = [
+            "Ну что, подведем итоги дня. Знаешь, день сопротивлялся, но ты был сильнее!\nИ вот насколько:",
+            "День думал, что он обычный. Ошибся!\nВот твои радости за сегодня:",
+            "Ты сегодня явно играл на стороне хорошего!\nВот твой выигрыш:",
+            "Сегодняшний улов.\nПосмотри, сколько хорошего произошло за сегодня:",
+            "Статистика дня:\nТвои радости за сегодня:",
+        ]
+        intro = random.choice(report_headers)
+        report = f"{random.choice(JOY_EMOJIS)} {intro}\n\n"
         for i, joy in enumerate(joys, 1):
             report += f"{i}. {joy}\n"
         report += "\nСпокойной ночи!"
@@ -1283,6 +1290,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
