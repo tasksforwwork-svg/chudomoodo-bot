@@ -416,14 +416,23 @@ def get_updates(offset: Optional[int] = None, timeout: int = POLL_TIMEOUT) -> Li
 
 def send_message(chat_id: int, text: str):
     try:
-        # Добавляем задержку 2–3 секунды перед ответом
+        # Показываем "набирает сообщение..."
+        requests.post(
+            f"{API_URL}/sendChatAction",
+            json={"chat_id": chat_id, "action": "typing"},
+            timeout=5,
+        )
+
+        # Задержка 2–3 секунды для реалистичности
         time.sleep(random.uniform(2, 3))
 
+        # Отправляем сообщение
         requests.post(
             f"{API_URL}/sendMessage",
             json={"chat_id": chat_id, "text": text},
             timeout=10,
         )
+
     except Exception as e:
         print("sendMessage error:", e)
 
@@ -1293,6 +1302,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
