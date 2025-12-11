@@ -416,6 +416,9 @@ def get_updates(offset: Optional[int] = None, timeout: int = POLL_TIMEOUT) -> Li
 
 def send_message(chat_id: int, text: str):
     try:
+        # Добавляем задержку 2–3 секунды перед ответом
+        time.sleep(random.uniform(2, 3))
+
         requests.post(
             f"{API_URL}/sendMessage",
             json={"chat_id": chat_id, "text": text},
@@ -1290,6 +1293,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
