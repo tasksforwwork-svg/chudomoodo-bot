@@ -35,6 +35,7 @@ def now_minsk() -> datetime:
 
 def today_minsk() -> date:
     return now_minsk().date()
+
 from typing import List, Tuple, Optional, Dict
 
 import requests
@@ -549,6 +550,7 @@ def get_todays_joys(chat_id: int) -> List[str]:
         (chat_id, today),
     )
     joys = [row[0] for row in cur.fetchall()]
+    joys = [j for j in joys if not is_sad_message(j)]
     conn.close()
     return joys
 
@@ -606,7 +608,7 @@ def mark_update_processed(update_id: int) -> bool:
     """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    processed_at = datetime.now().isoformat(timespec="seconds")
+    processed_at = now_minsk().isoformat(timespec="seconds")
     try:
         cur.execute(
             "INSERT INTO processed_updates (update_id, processed_at) VALUES (?, ?)",
@@ -643,7 +645,7 @@ def mark_reminder_sent(chat_id: int, reminder_type: str):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     today = today_minsk().isoformat()
-sent_at = now_minsk().isoformat(timespec="seconds")
+    sent_at = now_minsk().isoformat(timespec="seconds")
     try:
         cur.execute(
             """
@@ -659,10 +661,11 @@ sent_at = now_minsk().isoformat(timespec="seconds")
         conn.close()
 
 
+
 def set_dialog_state(chat_id: int, state: str, meta: Optional[dict] = None):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = now_minsk().isoformat(timespec="seconds")
     meta_json = json.dumps(meta) if meta is not None else None
     cur.execute(
         """
@@ -1281,9 +1284,9 @@ def daily_scheduler():
 
     while True:
         now = now_minsk()
-today = now.date()
+        today = now.date()
 
-                # Напоминание в 20:00
+        # Напоминание в 20:00 (Минск)
         if now.hour == 20 and now.minute == 0:
             if last_reminder_day != today:
                 print(f"Отправляем напоминания в {now}")
@@ -1297,7 +1300,7 @@ today = now.date()
             else:
                 time.sleep(30)
 
-        # Отчёт в 22:00
+        # Отчёт в 22:00 (Минск)
         elif now.hour == 22 and now.minute == 0:
             if last_report_day != today:
                 print(f"Отправляем отчёты в {now}")
@@ -1314,10 +1317,6 @@ today = now.date()
         else:
             time.sleep(30)
 
-
-# --------------------------
-# Основной цикл обработки
-# --------------------------
 
 def main_loop():
     """Основной цикл обработки сообщений."""
@@ -1373,6 +1372,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
