@@ -26,6 +26,15 @@ import random
 import re
 import json
 from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
+
+MINSK_TZ = ZoneInfo("Europe/Minsk")
+
+def now_minsk() -> datetime:
+    return datetime.now(MINSK_TZ)
+
+def today_minsk() -> date:
+    return now_minsk().date()
 from typing import List, Tuple, Optional, Dict
 
 import requests
@@ -145,7 +154,14 @@ SAD_PATTERNS = [
     "хронический стресс", "живу в стрессе", "нет покоя", "покоя нет", "не могу успокоиться",
     "все раздражает", "всё раздражает", "раздражают все", "нет терпения", "терпения нет",
     "потерял терпение", "чувствую себя загнанным", "чувствую себя загнанной", "в тупике",
-    "зашел в тупик", "зашла в тупик", "нет перспектив", "перспектив нет", "будущее пугает"
+    "зашел в тупик", "зашла в тупик", "нет перспектив", "перспектив нет", "будущее пугает","печально",
+    "печаль",
+    "печалька",
+    "грусть",
+    "грустно",
+    "тоскливо",
+    "тоска",
+    "печль",
 ]
 
 # Усталость, выгорание
@@ -497,7 +513,7 @@ def init_db():
 def add_joy(chat_id: int, text: str):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    created_at = datetime.now().isoformat(timespec="seconds")
+    created_at = now_minsk().isoformat(timespec="seconds")
     cur.execute(
         "INSERT INTO joys (chat_id, text, created_at) VALUES (?, ?, ?)",
         (chat_id, text, created_at),
@@ -521,7 +537,7 @@ def get_joy_count(chat_id: int) -> int:
 def get_todays_joys(chat_id: int) -> List[str]:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    today = date.today().isoformat()
+    today = today_minsk().isoformat()
     cur.execute(
         """
         SELECT text
@@ -607,7 +623,7 @@ def mark_update_processed(update_id: int) -> bool:
 def has_sent_reminder_today(chat_id: int, reminder_type: str) -> bool:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    today = date.today().isoformat()
+    today = today_minsk().isoformat()
     cur.execute(
         """
         SELECT COUNT(*)
@@ -626,8 +642,8 @@ def has_sent_reminder_today(chat_id: int, reminder_type: str) -> bool:
 def mark_reminder_sent(chat_id: int, reminder_type: str):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    today = date.today().isoformat()
-    sent_at = datetime.now().isoformat(timespec="seconds")
+    today = today_minsk().isoformat()
+sent_at = now_minsk().isoformat(timespec="seconds")
     try:
         cur.execute(
             """
@@ -810,9 +826,17 @@ def is_sad_message(text: str) -> bool:
     lower = normalize_text_for_match(text)
     words = lower.split()
 
-    # Если сообщение содержит отдельное слово "ад" — считаем это очень тяжёлым днём
+    # Если сообщение содержит отдельное слово "ад" — считаем это тяжелым днём (грусть)
     if "ад" in words:
         return True
+
+    # Корневые проверки (ловим разные формы и опечатки)
+    # печал → печаль, печально, печальная, печалька...
+    # груст → грусть, грустно, грустненько...
+    # тоск  → тоска, тоскливо...
+    for root in ("печал", "груст", "тоск"):
+        if root in lower:
+            return True
 
     for pattern in SAD_PATTERNS:
         if pattern in lower:
@@ -982,7 +1006,7 @@ def get_wantnow_report(chat_id: int) -> str:
 
     report = f"{random.choice(JOY_EMOJIS)} Вот все твои записанные радости:\n\n"
 
-    today = date.today()
+    today = today_minsk()
     for date_str in sorted_dates:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
 
@@ -1209,7 +1233,7 @@ def handle_message(chat_id: int, text: str) -> bool:
 # --------------------------
 
 def send_reminder(chat_id: int):
-    today = date.today()
+    today = today_minsk()
 
     if has_sent_reminder_today(chat_id, "reminder"):
         return
@@ -1223,7 +1247,7 @@ def send_reminder(chat_id: int):
 
 
 def send_daily_report(chat_id: int):
-    today = date.today()
+    today = today_minsk()
 
     if has_sent_reminder_today(chat_id, "report"):
         return
@@ -1256,8 +1280,8 @@ def daily_scheduler():
     last_report_day = None
 
     while True:
-        now = datetime.now()
-        today = now.date()
+        now = now_minsk()
+today = now.date()
 
                 # Напоминание в 20:00
         if now.hour == 20 and now.minute == 0:
@@ -1349,6 +1373,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
