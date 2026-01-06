@@ -26,12 +26,18 @@ import random
 import re
 import json
 from datetime import datetime, timedelta, date
-from zoneinfo import ZoneInfo
 
-MINSK_TZ = ZoneInfo("Europe/Minsk")
+# Таймзона Минска с защитой: на некоторых хостингах нет tzdata / другой Python
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+    MINSK_TZ = ZoneInfo("Europe/Minsk")
+except Exception:
+    MINSK_TZ = None  # fallback на локальную таймзону сервера
 
 def now_minsk() -> datetime:
-    return datetime.now(MINSK_TZ)
+    if MINSK_TZ is not None:
+        return datetime.now(MINSK_TZ)
+    return datetime.now()
 
 def today_minsk() -> date:
     return now_minsk().date()
@@ -299,7 +305,7 @@ CANCEL_PATTERNS = [
 # Приветственные ответы (greeting)
 GREETING_RESPONSES = [
     "Привет! Большое счастье состоит из маленьких мгновений. Какое из них запомнилось тебе сегодня?",
-    "Ооооо)) Рада тебя видеть здесь. Давай отметим что-нибудь приятное из этого дня?",
+    "Ооооо)) Рад тебя видеть здесь. Давай отметим что-нибудь приятное из этого дня?",
     "Хей! Первая радость — ты. Вторая — то, что ты сейчас мне расскажешь.",
     "Привет! Давай честно: что сегодня было нормального и не бесило? Такие вещи надо уважать.",
     "Ооо, ты здесь! Подкинь событие, после которого ты не закатила глаза. Это редкость, коллекционный экземпляр!",
@@ -309,7 +315,7 @@ GREETING_RESPONSES = [
     "Рад, что ты заглянула! Давай, вспоминай: что в этот день было хорошего? Хоть что-то? Хоть кто-то?",
     "Хэй! Я тут, ты тут — уже неплохо, согласись. А что ещё хорошего произошло?",
     "Привет, цыпа! Мир всё ещё на месте, а ты всё ещё красавица. Что хорошего сегодня произошло?",
-    "Привет! Я тут уже подумала, что ты сегодня была настолько счастлива, что забыла про всё на свете. Такое бывает!",
+    "Привет! Я тут уже подумал, что ты сегодня была настолько счастлива, что забыла про всё на свете. Такое бывает!",
     "Ооо, рада, что ты не стала NPC в своей же жизни! Давай запишем, что сегодня было по-настоящему классным!",
     "Эй, ну что, опять решила быть счастливой? Ладно, я с тобой.",
     "Хей! Кажется, твой день слишком хорош, чтобы пройти мимо.",
@@ -437,17 +443,17 @@ def get_updates(offset: Optional[int] = None, timeout: int = POLL_TIMEOUT) -> Li
         return []
 
 
-def send_message(chat_id: int, text: str):
+def send_message(chat_id: int, text: str, human_delay: bool = True):
     try:
-        # Показываем "набирает сообщение..."
-        requests.post(
-            f"{API_URL}/sendChatAction",
-            json={"chat_id": chat_id, "action": "typing"},
-            timeout=5,
-        )
-
-        # Задержка 2–3 секунды для реалистичности
-        time.sleep(random.uniform(2, 3))
+        if human_delay:
+            # Показываем "набирает сообщение..."
+            requests.post(
+                f"{API_URL}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+                timeout=5,
+            )
+            # Короткая задержка (не 2–3 сек, чтобы не тормозить бота)
+            time.sleep(random.uniform(0.8, 1.5))
 
         # Отправляем сообщение
         requests.post(
@@ -455,16 +461,25 @@ def send_message(chat_id: int, text: str):
             json={"chat_id": chat_id, "text": text},
             timeout=10,
         )
-
     except Exception as e:
         print("sendMessage error:", e)
 
 # --------------------------
 # DB
 # --------------------------
+def db_connect():
+    # timeout помогает при конкуренции потоков (scheduler + main_loop)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    # WAL сильно уменьшает шанс "database is locked"
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+    except Exception:
+        pass
+    return conn
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
 
     # Основные таблицы
@@ -512,7 +527,7 @@ def init_db():
 
 
 def add_joy(chat_id: int, text: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     created_at = now_minsk().isoformat(timespec="seconds")
     cur.execute(
@@ -524,7 +539,7 @@ def add_joy(chat_id: int, text: str):
 
 
 def get_joy_count(chat_id: int) -> int:
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     cur.execute(
         "SELECT COUNT(*) FROM joys WHERE chat_id = ?",
@@ -536,7 +551,7 @@ def get_joy_count(chat_id: int) -> int:
 
 
 def get_todays_joys(chat_id: int) -> List[str]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     today = today_minsk().isoformat()
     cur.execute(
@@ -557,7 +572,7 @@ def get_todays_joys(chat_id: int) -> List[str]:
 
 def get_all_joys(chat_id: int) -> List[Tuple[str, str]]:
     """Получить все радости пользователя с датами."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     cur.execute(
         """
@@ -574,7 +589,7 @@ def get_all_joys(chat_id: int) -> List[Tuple[str, str]]:
 
 
 def has_joy_for_date(chat_id: int, date_obj: date) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     date_str = date_obj.isoformat()
     cur.execute(
@@ -592,7 +607,7 @@ def has_joy_for_date(chat_id: int, date_obj: date) -> bool:
 
 
 def get_all_user_ids() -> List[int]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     cur.execute("SELECT DISTINCT chat_id FROM joys")
     rows = cur.fetchall()
@@ -606,7 +621,7 @@ def mark_update_processed(update_id: int) -> bool:
     Возвращает True, если запись добавлена впервые.
     Возвращает False, если такой update_id уже есть.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     processed_at = now_minsk().isoformat(timespec="seconds")
     try:
@@ -623,7 +638,7 @@ def mark_update_processed(update_id: int) -> bool:
 
 
 def has_sent_reminder_today(chat_id: int, reminder_type: str) -> bool:
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     today = today_minsk().isoformat()
     cur.execute(
@@ -642,7 +657,7 @@ def has_sent_reminder_today(chat_id: int, reminder_type: str) -> bool:
 
 
 def mark_reminder_sent(chat_id: int, reminder_type: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     today = today_minsk().isoformat()
     sent_at = now_minsk().isoformat(timespec="seconds")
@@ -663,7 +678,7 @@ def mark_reminder_sent(chat_id: int, reminder_type: str):
 
 
 def set_dialog_state(chat_id: int, state: str, meta: Optional[dict] = None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     now = now_minsk().isoformat(timespec="seconds")
     meta_json = json.dumps(meta) if meta is not None else None
@@ -683,7 +698,7 @@ def set_dialog_state(chat_id: int, state: str, meta: Optional[dict] = None):
 
 
 def get_dialog_state(chat_id: int) -> Tuple[Optional[str], Optional[dict]]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     cur.execute(
         "SELECT state, meta FROM dialog_state WHERE chat_id = ?",
@@ -704,7 +719,7 @@ def get_dialog_state(chat_id: int) -> Tuple[Optional[str], Optional[dict]]:
 
 
 def clear_dialog_state(chat_id: int):
-    conn = sqlite3.connect(DB_PATH)
+    conn = db_connect()
     cur = conn.cursor()
     cur.execute("DELETE FROM dialog_state WHERE chat_id = ?", (chat_id,))
     conn.commit()
@@ -740,26 +755,28 @@ def _is_duplicate_message(chat_id: int, text: str, window_seconds: float = 2.0) 
 
 def contains_profanity(text: str) -> bool:
     """
-    Проверяем мат по регуляркам:
-    - работаем по "словам", а не по произвольным подстрокам;
-    - используем word boundary (\b), чтобы не ловить нормальные слова;
-    - игнорируем слишком короткие корни (меньше 3 символов), чтобы не было
-      ложных срабатываний типа 'радостью' и т.п.
+    Проверяем мат:
+    - одиночные "корни" ищем regex-ом по словам (чтобы не ловить лишнее);
+    - фразы с пробелами ("хуй знает", "ёб твою мать" и т.п.) ищем как подстроку
+      в нормализованном тексте.
     """
     normalized = normalize_text_for_match(text)
 
     for bad_root in BAD_WORDS:
-        # Слишком короткие корни часто дают ложные срабатывания
-        if len(bad_root) < 3:
+        br = bad_root.lower().replace("ё", "е")
+
+        # Фразы (есть пробел) — ищем как подстроку в нормализованном тексте
+        if " " in br:
+            if br in normalized:
+                return True
             continue
 
-        # Экранируем корень, чтобы он корректно работал в regex
-        escaped_root = re.escape(bad_root)
+        # Слишком короткие корни часто дают ложные срабатывания
+        if len(br) < 3:
+            continue
 
-        # Ищем корень внутри слова, но с границами слова:
-        #    \b\w*<root>\w*\b  — "слово, внутри которого есть этот корень"
-        pattern = r"\b\w*" + escaped_root + r"\w*\b"
-
+        # Ищем корень внутри слова, но с границами слова
+        pattern = r"\b\w*" + re.escape(br) + r"\w*\b"
         if re.search(pattern, normalized):
             return True
 
@@ -768,34 +785,57 @@ def contains_profanity(text: str) -> bool:
 
 def clean_profanity(text: str) -> str:
     """
-    Заменяем мат на звёздочки по тем же правилам, что и в contains_profanity:
-    - работаем по словам;
-    - используем регулярки с границами слов;
-    - игнорируем слишком короткие корни.
+    Маскируем мат:
+    - одиночные корни: проверяем regex-ом по словам;
+    - фразы с пробелами: если встречаются в нормализованном тексте,
+      маскируем слова, которые входят в фразу.
     """
     words = text.split()
+    if not words:
+        return text
+
+    normalized_full = normalize_text_for_match(text)
+
+    # 1) Собираем "фразовые" выражения, которые реально встретились
+    phrase_matches = []
+    for bad_root in BAD_WORDS:
+        br = bad_root.lower().replace("ё", "е")
+        if " " in br and br in normalized_full:
+            phrase_matches.append(br)
+
     cleaned_words = []
 
+    # 2) Идём по словам и решаем, маскировать или нет
     for word in words:
-        # Нормализуем для проверки (нижний регистр, е/ё и т.п.)
         lower_word = word.lower().replace("ё", "е")
         word_cleaned = False
 
+        # 2a) Если слово входит в найденную "фразу" — маскируем
+        for ph in phrase_matches:
+            for ph_word in ph.split():
+                if ph_word and ph_word in lower_word:
+                    cleaned_word = "".join("*" if ch.isalpha() else ch for ch in word)
+                    cleaned_words.append(cleaned_word)
+                    word_cleaned = True
+                    break
+            if word_cleaned:
+                break
+
+        if word_cleaned:
+            continue
+
+        # 2b) Проверка по "корням" без пробелов
         for bad_root in BAD_WORDS:
-            if len(bad_root) < 3:
+            br = bad_root.lower().replace("ё", "е")
+
+            if " " in br:
+                continue
+            if len(br) < 3:
                 continue
 
-            escaped_root = re.escape(bad_root)
-            pattern = r"\b\w*" + escaped_root + r"\w*\b"
-
+            pattern = r"\b\w*" + re.escape(br) + r"\w*\b"
             if re.search(pattern, lower_word):
-                # Маскируем только буквы, оставляя знаки препинания
-                cleaned_word = ""
-                for char in word:
-                    if char.isalpha():
-                        cleaned_word += "*"
-                    else:
-                        cleaned_word += char
+                cleaned_word = "".join("*" if ch.isalpha() else ch for ch in word)
                 cleaned_words.append(cleaned_word)
                 word_cleaned = True
                 break
@@ -1244,7 +1284,8 @@ def send_reminder(chat_id: int):
     if not has_joy_for_date(chat_id, today):
         send_message(
             chat_id,
-            f"{random.choice(REMINDER_EMOJIS)} Привет! Напоминаю, что сегодня ты ещё не записала ни одной радости."
+            f"{random.choice(REMINDER_EMOJIS)} Привет! Напоминаю, что сегодня ты ещё не записала ни одной радости.",
+            human_delay=False
         )
         mark_reminder_sent(chat_id, "reminder")
 
@@ -1273,7 +1314,7 @@ def send_daily_report(chat_id: int):
     else:
         report = f"{random.choice(CALM_EMOJIS)} День подошёл к концу. Завтра будет новый шанс!"
 
-    send_message(chat_id, report)
+    send_message(chat_id, report, human_delay=False)
     mark_reminder_sent(chat_id, "report")
 
 
@@ -1372,6 +1413,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
